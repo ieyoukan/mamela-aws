@@ -1,0 +1,47 @@
+import Lib
+import Lib.{Boundary, Vpc, Subnet, SecurityGroup, FromGroup, Role, Ec2Instances, Cluster, Instance}
+import Mamela
+
+@test
+fn a_subnet_waits_for_its_vpc() {
+  b = Boundary(name: "lt")
+  net = Vpc(name: "net", cidr: "10.42.0.0/16")
+  public = Subnet(name: "public", vpc: net, cidr: "10.42.1.0/24", zone: "ap-northeast-1a")
+  json = Mamela.to_json(Mamela.empty() |> Lib.vpc(b, net) |> Lib.subnet(b, public))
+  assert json.contains(
+    "{\"after\":[\"AwsVpc net\"],\"kind\":\"AwsSubnet\",\"name\":\"public\",\"provider\":\"aws\",\"spec\":{\"boundary\":\"lt\",\"cidr\":\"10.42.1.0/24\",\"vpc\":\"net\",\"zone\":\"ap-northeast-1a\"}}",
+  )
+}
+
+@test
+fn a_rule_from_a_group_waits_for_the_group() {
+  b = Boundary(name: "lt")
+  net = Vpc(name: "net", cidr: "10.42.0.0/16")
+  client = SecurityGroup(name: "client", vpc: net, description: "c")
+  server = SecurityGroup(name: "server", vpc: net, description: "s")
+  json = Mamela.to_json(
+    Mamela.empty() |> Lib.security_group(b, server, [FromGroup(port: 80, group: client)]),
+  )
+  assert json.contains("\"after\":[\"AwsVpc net\",\"AwsSecurityGroup client\"]")
+  assert json.contains("\"ingress\":[{\"fromGroup\":\"client\",\"port\":80}]")
+}
+
+@test
+fn an_instance_role_has_a_profile() {
+  b = Boundary(name: "lt")
+  net = Vpc(name: "net", cidr: "10.42.0.0/16")
+  role = Role(name: "instance", trust: Ec2Instances)
+  i = Instance(
+    name: "target",
+    cluster: Cluster(name: "main"),
+    subnet: Subnet(name: "public", vpc: net, cidr: "10.42.1.0/24", zone: "z"),
+    group: SecurityGroup(name: "target", vpc: net, description: "t"),
+    role:,
+    instance_type: "t4g.micro",
+  )
+  json = Mamela.to_json(Mamela.empty() |> Lib.role(b, role) |> Lib.instance(b, i))
+  assert json.contains("\"instanceProfile\":true,\"policy\":\"ecs-for-ec2\",\"trust\":\"ec2\"")
+  assert json.contains(
+    "\"after\":[\"AwsEcsCluster main\",\"AwsSubnet public\",\"AwsSecurityGroup target\",\"AwsIamRole instance\"]",
+  )
+}

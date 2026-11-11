@@ -1,0 +1,17 @@
+[pome]
+name = "github.com/ieyoukan/mamela-aws/examples/locust"
+version = "0.1.0"
+emela = "0.27.0"
+
+[build]
+target = "wasm"
+
+[dependencies]
+"github.com/ieyoukan/mamela/pome/mamela" = "v0.3.0"
+"github.com/ieyoukan/mamela-aws/pome" = "v0.1.0"
+
+# Until the Pomes are published: this checkout's Pome, and a checkout of github.com/ieyoukan/mamela
+# next to this one.
+[replace]
+"github.com/ieyoukan/mamela/pome/mamela" = { path = "../../../mamela/pome/mamela" }
+"github.com/ieyoukan/mamela-aws/pome" = { path = "../../pome" }

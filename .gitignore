@@ -1,0 +1,9 @@
+/go.work
+/go.work.sum
+mamela.providers.toml
+mamela.site.toml
+/lab/local/
+*.wasm
+/.mamela/
+target/
+!/pome/provider.wasm

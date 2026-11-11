@@ -1,0 +1,13 @@
+[pome]
+name = "github.com/ieyoukan/mamela-aws/pome"
+version = "0.1.0"
+emela = "0.27.0"
+module = "Aws"
+
+[dependencies]
+"github.com/ieyoukan/mamela/pome/mamela" = "v0.3.0"
+"github.com/emela-lang/x/dynamic" = "v0.5.1"
+
+# Until Mamela Pome 0.3.0 is published: a checkout of github.com/ieyoukan/mamela next to this one.
+[replace]
+"github.com/ieyoukan/mamela/pome/mamela" = { path = "../../mamela/pome/mamela" }

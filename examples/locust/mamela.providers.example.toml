@@ -1,0 +1,43 @@
+# The aws provider's APIs and guard, for examples/locust. Copy it to mamela.providers.toml (which
+# git ignores) and write your own profile and region. No key is written here: Mamela reads the
+# profile's credentials (temporary ones too) from ~/.aws/credentials for each request.
+
+[provider.aws]
+auth = "aws-sigv4"
+profile = "mamela-lab"
+region = "ap-northeast-1"
+
+[provider.aws.apis.ec2]
+api_url = "https://ec2.ap-northeast-1.amazonaws.com"
+service = "ec2"
+catalog = "builtin:ec2"
+
+[provider.aws.apis.ecs]
+api_url = "https://ecs.ap-northeast-1.amazonaws.com"
+service = "ecs"
+catalog = "builtin:ecs"
+
+[provider.aws.apis.logs]
+api_url = "https://logs.ap-northeast-1.amazonaws.com"
+service = "logs"
+catalog = "builtin:logs"
+
+[provider.aws.apis.ssm]
+api_url = "https://ssm.ap-northeast-1.amazonaws.com"
+service = "ssm"
+catalog = "builtin:ssm"
+
+# IAM is global: its endpoint signs for us-east-1.
+[provider.aws.apis.iam]
+api_url = "https://iam.amazonaws.com"
+service = "iam"
+region = "us-east-1"
+catalog = "builtin:iam"
+
+# The guard keeps every change to the boundary (the declaration's Aws.Boundary), to these instance
+# types, and to these numbers of instances and tasks.
+[provider.aws.guard]
+boundary = "locust"
+instance_types = ["t4g.micro"]
+max_instances = 1
+max_tasks = 3

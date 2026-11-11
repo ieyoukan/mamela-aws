@@ -1,0 +1,30 @@
+name: ci
+on:
+  push:
+  pull_request:
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: mamela-aws
+      - uses: actions/checkout@v4
+        with:
+          repository: ieyoukan/mamela
+          ref: feat/proxmox-out
+          path: mamela
+      # The Go that builds pome/provider.wasm (build.sh): another release gives another program.
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.27.3"
+      - name: Mamela's pinned toolchain (wasmtime)
+        working-directory: mamela
+        run: go run ./cmd/mamela toolchain install --dir "$PWD/.tools/bin" --downloads "$PWD/.tools/downloads"
+      - name: Test
+        working-directory: mamela-aws
+        env:
+          GOTOOLCHAIN: local
+          GOWORK: "off"
+          MAMELA_TOOLCHAIN_DIR: ${{ github.workspace }}/mamela/.tools/bin
+        run: go vet ./... && go test ./...

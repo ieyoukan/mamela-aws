@@ -1,0 +1,156 @@
+# The load test of a locust on Fargate Spot against nginx on an ECS container instance, in a VPC of
+# its own: nothing outside the boundary "locust" is read for a change or touched.
+#
+#   mamela plan / apply   creates it, in rounds as what each resource needs is created
+#   mamela act --confirm locust run-task "AwsEcsService locust" .
+#                         runs one load test (1 minute, 5 users), whose logs go to
+#                         /mamela/locust/locust
+#   mamela act --confirm <name> delete <resource> .
+#                         deletes, resource by resource (README: the order)
+#
+# The boundary, the instance type and the numbers of instances and tasks must also be the guard's
+# ([provider.aws.guard] in mamela.providers.toml).
+
+import Std.Console.{SystemConsole}
+import Mamela
+import Aws.{
+  Boundary,
+  Vpc,
+  InternetGateway,
+  Subnet,
+  RouteTable,
+  SecurityGroup,
+  FromGroup,
+  LogGroup,
+  Role,
+  EcsTasks,
+  Ec2Instances,
+  Cluster,
+  Instance,
+  Container,
+  Port,
+  Plain,
+  PrivateIp,
+  TaskDefinition,
+  RunsOnEc2,
+  RunsOnFargate,
+  Service,
+  OnEc2,
+  OnFargateSpot,
+}
+
+## The locustfile, from this repository (Locust downloads a -f URL since 2.23).
+const LOCUSTFILE = "https://raw.githubusercontent.com/ieyoukan/mamela-aws/main/examples/locust/locustfile.py"
+
+fn infrastructure() -> Mamela.Graph {
+  b = Boundary(name: "locust")
+  net = Vpc(name: "net", cidr: "10.42.0.0/16")
+  igw = InternetGateway(name: "igw", vpc: net)
+  public = Subnet(name: "public", vpc: net, cidr: "10.42.1.0/24", zone: "ap-northeast-1a")
+  routes = RouteTable(name: "public", vpc: net, gateway: igw, subnet: public)
+  load = SecurityGroup(name: "locust", vpc: net, description: "the load generator")
+  target = SecurityGroup(
+    name: "target",
+    vpc: net,
+    description: "the target, reached from the load generator",
+  )
+
+  logs = LogGroup(name: "locust", retention_days: 7)
+  execution = Role(name: "task-execution", trust: EcsTasks)
+  instance_role = Role(name: "instance", trust: Ec2Instances)
+  main = Cluster(name: "main")
+  host = Instance(
+    name: "target",
+    cluster: main,
+    subnet: public,
+    group: target,
+    role: instance_role,
+    instance_type: "t4g.micro",
+  )
+
+  nginx = TaskDefinition(
+    name: "nginx",
+    runs: RunsOnEc2,
+    cpu: 128,
+    memory_mib: 128,
+    execution_role: execution,
+    log_group: logs,
+    containers: [
+      Container(
+        name: "nginx",
+        image: "public.ecr.aws/nginx/nginx:stable",
+        command: [],
+        environment: [],
+        ports: [Port(container: 80, host: 80)],
+        memory_mib: 0,
+      ),
+    ],
+  )
+  locust = TaskDefinition(
+    name: "locust",
+    runs: RunsOnFargate,
+    cpu: 256,
+    memory_mib: 512,
+    execution_role: execution,
+    log_group: logs,
+    containers: [
+      Container(
+        name: "locust",
+        image: "locustio/locust:2.32.0",
+        command: [
+          "-f",
+          LOCUSTFILE,
+          "--headless",
+          "-u",
+          "5",
+          "-r",
+          "1",
+          "-t",
+          "1m",
+          "--only-summary",
+        ],
+        environment: [
+          PrivateIp(name: "LOCUST_HOST", instance: host, prefix: "http://"),
+          Plain(name: "PYTHONUNBUFFERED", value: "1"),
+        ],
+        ports: [],
+        memory_mib: 0,
+      ),
+    ],
+  )
+
+  Mamela.empty()
+    |> Aws.vpc(b, net)
+    |> Aws.internet_gateway(b, igw)
+    |> Aws.subnet(b, public)
+    |> Aws.route_table(b, routes)
+    |> Aws.security_group(b, load, [])
+    |> Aws.security_group(b, target, [FromGroup(port: 80, group: load)])
+    |> Aws.log_group(b, logs)
+    |> Aws.role(b, execution)
+    |> Aws.role(b, instance_role)
+    |> Aws.cluster(b, main)
+    |> Aws.instance(b, host)
+    |> Aws.task_definition(b, nginx)
+    |> Aws.service(
+      b,
+      Service(name: "target", cluster: main, task_definition: nginx, count: 1, launch: OnEc2),
+    )
+    |> Aws.task_definition(b, locust)
+    |> Aws.service(
+      b,
+      Service(
+        name: "locust",
+        cluster: main,
+        task_definition: locust,
+        count: 0,
+        launch: OnFargateSpot(subnet: public, group: load, public_ip: True),
+      ),
+    )
+}
+
+fn main() {
+  with SystemConsole {
+    infrastructure() |> Mamela.print
+  }
+}

@@ -1,0 +1,378 @@
+## Aws: a corner of AWS for containers, through the Mamela provider "aws"
+## (github.com/ieyoukan/mamela-aws): a VPC of its own with a public subnet, IAM roles for ECS,
+## CloudWatch log groups, and an ECS cluster with container instances on EC2 and services on EC2,
+## Fargate or Fargate Spot. The provider runs isolated and reaches AWS only through Mamela, which
+## signs every request with the profile mamela.providers.toml names, checks it against Mamela's AWS
+## catalogs and the change's permit, and never shows the provider a key.
+##
+## Every resource is declared in a `Boundary`, which must be the guard's ([provider.aws.guard]
+## boundary): the guard refuses any change outside it. Resources refer to each other by their
+## typed values; Mamela plans one once those it refers to exist, and the provider writes their IDs
+## (a subnet's, a role's ARN) into its requests. Nothing is ever deleted by a plan: delete with
+## `mamela act --confirm <name> delete <resource> <pome-dir>`.
+
+import Mamela
+import Mamela.{Ref}
+import Dynamic.{Dynamic, Text, Items}
+import Dynamic.Number
+
+## The provider, as its manifest names it.
+pub const PROVIDER = "aws"
+
+## The boundary of a declaration: its name tags everything made (mamela:boundary), and starts
+## the AWS names ("locust-main").
+pub type Boundary(name: String)
+
+## A VPC of the boundary's own.
+pub type Vpc(name: String, cidr: String)
+
+## The VPC's internet gateway.
+pub type InternetGateway(name: String, vpc: Vpc)
+
+## A subnet in one availability zone ("ap-northeast-1a").
+pub type Subnet(name: String, vpc: Vpc, cidr: String, zone: String)
+
+## A route table that routes the subnet to the internet through the gateway: a public subnet.
+pub type RouteTable(name: String, vpc: Vpc, gateway: InternetGateway, subnet: Subnet)
+
+## A security group; its ingress rules are given when it is declared.
+pub type SecurityGroup(name: String, vpc: Vpc, description: String)
+
+## An ingress rule: TCP to a port, from the members of a security group or from a CIDR block.
+pub enum Ingress {
+  FromGroup(port: Int, group: SecurityGroup)
+  FromCidr(port: Int, cidr: String)
+}
+
+## A CloudWatch log group, /mamela/<boundary>/<name>, that keeps logs `retention_days` days.
+pub type LogGroup(name: String, retention_days: Int)
+
+## Who assumes a role: ECS for tasks (to pull images and write logs; the AWS-managed
+## AmazonECSTaskExecutionRolePolicy), or EC2 instances (to run the ECS agent;
+## AmazonEC2ContainerServiceforEC2Role, with an instance profile).
+pub enum Trust {
+  EcsTasks
+  Ec2Instances
+}
+
+## An IAM role under the path /mamela/.
+pub type Role(name: String, trust: Trust)
+
+## An ECS cluster: Fargate and Fargate Spot, and the container instances that join it.
+pub type Cluster(name: String)
+
+## A container instance: an EC2 instance of the ECS-optimized Amazon Linux 2023 that joins the
+## cluster, with a public IP address (to reach ECS without a NAT gateway). Its role trusts
+## `Ec2Instances`. The guard allows only the instance types of [provider.aws.guard].
+pub type Instance(
+  name: String,
+  cluster: Cluster,
+  subnet: Subnet,
+  group: SecurityGroup,
+  role: Role,
+  instance_type: String,
+)
+
+## An environment variable of a container: a value, or the private IP address of an instance
+## after a prefix ("http://" and the address).
+pub enum Env {
+  Plain(name: String, value: String)
+  PrivateIp(name: String, instance: Instance, prefix: String)
+}
+
+## A container's TCP port, and on EC2 the instance's port it is reached on (0: none).
+pub type Port(container: Int, host: Int)
+
+## A container. `command` is its arguments (the image's entrypoint runs them); `memory_mib` its
+## hard limit on EC2 (0: the task's).
+pub type Container(
+  name: String,
+  image: String,
+  command: List[String],
+  environment: List[Env],
+  ports: List[Port],
+  memory_mib: Int,
+)
+
+## Where a task definition's tasks run: on container instances (bridge network) or on Fargate
+## (awsvpc; also Fargate Spot).
+pub enum Runs {
+  RunsOnEc2
+  RunsOnFargate
+}
+
+## A task definition: `cpu` in CPU units (1024 to a vCPU), `memory_mib` in MiB. Its containers'
+## logs go to the log group, written with the execution role (which trusts `EcsTasks`). A change
+## registers a new revision.
+pub type TaskDefinition(
+  name: String,
+  runs: Runs,
+  cpu: Int,
+  memory_mib: Int,
+  execution_role: Role,
+  log_group: LogGroup,
+  containers: List[Container],
+)
+
+## How a service runs its tasks: on the cluster's container instances, or on Fargate (Spot) in a
+## subnet and security group, with a public IP address to pull images without a NAT gateway.
+pub enum Launch {
+  OnEc2
+  OnFargate(subnet: Subnet, group: SecurityGroup, public_ip: Bool)
+  OnFargateSpot(subnet: Subnet, group: SecurityGroup, public_ip: Bool)
+}
+
+## A service that keeps `count` tasks of a task definition running. A service of 0 tasks is a
+## way to run one-off tasks: `mamela act --confirm <name> run-task "AwsEcsService <name>"`
+## runs one, as the service would.
+pub type Service(
+  name: String,
+  cluster: Cluster,
+  task_definition: TaskDefinition,
+  count: Int,
+  launch: Launch,
+)
+
+fn int(n: Int) -> Dynamic {
+  Dynamic.Number(Number.from_int(n))
+}
+
+fn add(
+  graph: Mamela.Graph,
+  b: Boundary,
+  kind: String,
+  name: String,
+  spec: List[(String, Dynamic)],
+  after: List[Ref],
+) -> Mamela.Graph {
+  Mamela.provided_after(
+    graph,
+    PROVIDER,
+    kind,
+    name,
+    List.append([("boundary", Text(b.name))], spec),
+    after,
+  )
+}
+
+fn vpc_ref(v: Vpc) -> Ref {
+  Ref(kind: "AwsVpc", name: v.name)
+}
+
+fn subnet_ref(s: Subnet) -> Ref {
+  Ref(kind: "AwsSubnet", name: s.name)
+}
+
+fn group_ref(g: SecurityGroup) -> Ref {
+  Ref(kind: "AwsSecurityGroup", name: g.name)
+}
+
+fn role_ref(r: Role) -> Ref {
+  Ref(kind: "AwsIamRole", name: r.name)
+}
+
+fn cluster_ref(c: Cluster) -> Ref {
+  Ref(kind: "AwsEcsCluster", name: c.name)
+}
+
+fn instance_ref(i: Instance) -> Ref {
+  Ref(kind: "AwsEcsInstance", name: i.name)
+}
+
+## Declares the VPC.
+pub fn vpc(graph: Mamela.Graph, b: Boundary, v: Vpc) -> Mamela.Graph {
+  add(graph, b, "AwsVpc", v.name, [("cidr", Text(v.cidr))], [])
+}
+
+## Declares the internet gateway, attached to its VPC.
+pub fn internet_gateway(graph: Mamela.Graph, b: Boundary, g: InternetGateway) -> Mamela.Graph {
+  add(graph, b, "AwsInternetGateway", g.name, [("vpc", Text(g.vpc.name))], [vpc_ref(g.vpc)])
+}
+
+## Declares the subnet.
+pub fn subnet(graph: Mamela.Graph, b: Boundary, s: Subnet) -> Mamela.Graph {
+  spec = [("vpc", Text(s.vpc.name)), ("cidr", Text(s.cidr)), ("zone", Text(s.zone))]
+  add(graph, b, "AwsSubnet", s.name, spec, [vpc_ref(s.vpc)])
+}
+
+## Declares the route table: 0.0.0.0/0 to the gateway, for the subnet.
+pub fn route_table(graph: Mamela.Graph, b: Boundary, t: RouteTable) -> Mamela.Graph {
+  spec = [
+    ("vpc", Text(t.vpc.name)),
+    ("internetGateway", Text(t.gateway.name)),
+    ("subnet", Text(t.subnet.name)),
+  ]
+  after = [
+    vpc_ref(t.vpc),
+    Ref(kind: "AwsInternetGateway", name: t.gateway.name),
+    subnet_ref(t.subnet),
+  ]
+  add(graph, b, "AwsRouteTable", t.name, spec, after)
+}
+
+fn ingress_json(i: Ingress) -> Dynamic {
+  i match {
+    FromGroup(port, group) -> Dynamic.object([("port", int(port)), ("fromGroup", Text(group.name))])
+    FromCidr(port, cidr)   -> Dynamic.object([("port", int(port)), ("cidr", Text(cidr))])
+  }
+}
+
+fn ingress_after(i: Ingress) -> List[Ref] {
+  i match {
+    FromGroup(_, group) -> [group_ref(group)]
+    FromCidr(_, _)      -> []
+  }
+}
+
+## Declares the security group with its ingress rules (at most 4 new ones at a time). Mamela
+## adds rules, and never removes one.
+pub fn security_group(
+  graph: Mamela.Graph,
+  b: Boundary,
+  g: SecurityGroup,
+  ingress: List[Ingress],
+) -> Mamela.Graph {
+  rules = if List.is_empty(ingress) { [] } else { [("ingress", Items(ingress.map(ingress_json)))] }
+  spec = List.append([("vpc", Text(g.vpc.name)), ("description", Text(g.description))], rules)
+  after = List.append([vpc_ref(g.vpc)], List.flatten(ingress.map(ingress_after)))
+  add(graph, b, "AwsSecurityGroup", g.name, spec, after)
+}
+
+## Declares the log group.
+pub fn log_group(graph: Mamela.Graph, b: Boundary, l: LogGroup) -> Mamela.Graph {
+  add(graph, b, "AwsLogGroup", l.name, [("retentionDays", int(l.retention_days))], [])
+}
+
+## Declares the role.
+pub fn role(graph: Mamela.Graph, b: Boundary, r: Role) -> Mamela.Graph {
+  spec = r.trust match {
+    EcsTasks -> [("trust", Text("ecs-tasks")), ("policy", Text("ecs-task-execution"))]
+    Ec2Instances -> {
+      [
+        ("trust", Text("ec2")),
+        ("policy", Text("ecs-for-ec2")),
+        ("instanceProfile", Dynamic.Bool(True)),
+      ]
+    }
+  }
+  add(graph, b, "AwsIamRole", r.name, spec, [])
+}
+
+## Declares the cluster.
+pub fn cluster(graph: Mamela.Graph, b: Boundary, c: Cluster) -> Mamela.Graph {
+  add(graph, b, "AwsEcsCluster", c.name, [], [])
+}
+
+## Declares the container instance.
+pub fn instance(graph: Mamela.Graph, b: Boundary, i: Instance) -> Mamela.Graph {
+  spec = [
+    ("cluster", Text(i.cluster.name)),
+    ("subnet", Text(i.subnet.name)),
+    ("securityGroup", Text(i.group.name)),
+    ("role", Text(i.role.name)),
+    ("instanceType", Text(i.instance_type)),
+  ]
+  after = [cluster_ref(i.cluster), subnet_ref(i.subnet), group_ref(i.group), role_ref(i.role)]
+  add(graph, b, "AwsEcsInstance", i.name, spec, after)
+}
+
+fn env_json(e: Env) -> Dynamic {
+  e match {
+    Plain(name, value) -> Dynamic.object([("name", Text(name)), ("value", Text(value))])
+    PrivateIp(name, instance, prefix) -> {
+      Dynamic.object(
+        [("name", Text(name)), ("instanceIp", Text(instance.name)), ("prefix", Text(prefix))],
+      )
+    }
+  }
+}
+
+fn env_after(e: Env) -> List[Ref] {
+  e match {
+    Plain(_, _)               -> []
+    PrivateIp(_, instance, _) -> [instance_ref(instance)]
+  }
+}
+
+fn port_json(p: Port) -> Dynamic {
+  if p.host == 0 {
+    Dynamic.object([("container", int(p.container))])
+  } else {
+    Dynamic.object([("container", int(p.container)), ("host", int(p.host))])
+  }
+}
+
+fn container_json(c: Container) -> Dynamic {
+  fields = [("name", Text(c.name)), ("image", Text(c.image))]
+  command = if List.is_empty(c.command) { [] } else { [("command", Items(c.command.map(Text)))] }
+  env = if List.is_empty(c.environment) {
+    []
+  } else {
+    [("environment", Items(c.environment.map(env_json)))]
+  }
+  ports = if List.is_empty(c.ports) { [] } else { [("ports", Items(c.ports.map(port_json)))] }
+  memory = if c.memory_mib == 0 { [] } else { [("memoryMiB", int(c.memory_mib))] }
+  Dynamic.object(List.flatten([fields, command, env, ports, memory]))
+}
+
+fn container_after(c: Container) -> List[Ref] {
+  List.flatten(c.environment.map(env_after))
+}
+
+## Declares the task definition.
+pub fn task_definition(graph: Mamela.Graph, b: Boundary, t: TaskDefinition) -> Mamela.Graph {
+  launch = t.runs match {
+    RunsOnEc2     -> "EC2"
+    RunsOnFargate -> "FARGATE"
+  }
+  spec = [
+    ("launch", Text(launch)),
+    ("cpu", int(t.cpu)),
+    ("memoryMiB", int(t.memory_mib)),
+    ("executionRole", Text(t.execution_role.name)),
+    ("logGroup", Text(t.log_group.name)),
+    ("containers", Items(t.containers.map(container_json))),
+  ]
+  after = List.append(
+    [role_ref(t.execution_role), Ref(kind: "AwsLogGroup", name: t.log_group.name)],
+    List.flatten(t.containers.map(container_after)),
+  )
+  add(graph, b, "AwsEcsTaskDefinition", t.name, spec, after)
+}
+
+fn fargate(
+  launch: String,
+  subnet: Subnet,
+  group: SecurityGroup,
+  public_ip: Bool,
+) -> (List[(String, Dynamic)], List[Ref]) {
+  spec = [
+    ("launch", Text(launch)),
+    ("subnet", Text(subnet.name)),
+    ("securityGroup", Text(group.name)),
+    ("publicIp", Dynamic.Bool(public_ip)),
+  ]
+  (spec, [subnet_ref(subnet), group_ref(group)])
+}
+
+## Declares the service.
+pub fn service(graph: Mamela.Graph, b: Boundary, s: Service) -> Mamela.Graph {
+  (launch, needs) = s.launch match {
+    OnEc2                                   -> ([("launch", Text("EC2"))], [])
+    OnFargate(subnet, group, public_ip)     -> fargate("FARGATE", subnet, group, public_ip)
+    OnFargateSpot(subnet, group, public_ip) -> fargate("FARGATE_SPOT", subnet, group, public_ip)
+  }
+  spec = List.append(
+    [
+      ("cluster", Text(s.cluster.name)),
+      ("taskDefinition", Text(s.task_definition.name)),
+      ("count", int(s.count)),
+    ],
+    launch,
+  )
+  after = List.append(
+    [cluster_ref(s.cluster), Ref(kind: "AwsEcsTaskDefinition", name: s.task_definition.name)],
+    needs,
+  )
+  add(graph, b, "AwsEcsService", s.name, spec, after)
+}
