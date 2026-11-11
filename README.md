@@ -31,10 +31,22 @@
 - **しないこと:** CIDR、型、ネットワーク、インスタンスの役目の変更などは、差分としては示し（`replace`）、Mamela が拒みます。規則やポリシーを外すこともしません。
 - **IAM ロールにタグを付けない理由:** タグには `iam:TagRole` が要ります。運用者のロールには、この権限がないことが珍しくありません（検証に使ったロールにもありませんでした）。持ち主は、パス `/mamela/`、説明の目印、Mamela の作成記録で確かめます。
 - **ECS on EC2 に要る権限:** コンテナーインスタンス（クラスターに参加するインスタンス）には、運用者のロールに次の 2 つが要ります。
-  - `iam:CreateInstanceProfile` などのインスタンスプロファイルの権限
-  - そのロールを EC2 に渡す `iam:PassRole`
+  - `/mamela/` のインスタンスプロファイルの権限（`iam:CreateInstanceProfile` など）
+  - `/mamela/` のロールを EC2 に渡す `iam:PassRole`
   
-  これらがない環境では、コンテナーを動かすインスタンスと Fargate を使います。
+  ない環境では、管理者が次のポリシーを運用者のロールに付けます（`<account>` は自分のアカウント）。範囲は `/mamela/` だけです。付けられないときは、コンテナーを動かすインスタンスと Fargate を使います。
+
+  ```json
+  {"Version": "2012-10-17", "Statement": [
+    {"Effect": "Allow",
+     "Action": ["iam:CreateInstanceProfile", "iam:DeleteInstanceProfile", "iam:AddRoleToInstanceProfile", "iam:RemoveRoleFromInstanceProfile"],
+     "Resource": "arn:aws:iam::<account>:instance-profile/mamela/*"},
+    {"Effect": "Allow", "Action": "iam:PassRole", "Resource": "arn:aws:iam::<account>:role/mamela/*",
+     "Condition": {"StringEqualsIfExists": {"iam:PassedToService": "ec2.amazonaws.com"}}}
+  ]}
+  ```
+
+  `AddRoleToInstanceProfile` も `iam:PassRole` を求めます。そのときは `iam:PassedToService` がないので、条件は `StringEqualsIfExists` にします。
 - **宣言を消しても、何も消しません。** 消すのは、次の明示操作だけです。
 
 ### 明示操作
@@ -118,10 +130,23 @@ CloudWatch Logs /mamela/locust/locust（7 日）、IAM /mamela/locust-task-execu
 - **片付けの後の確認:** AWS CLI の読み取りで確かめました。リージョンの VPC と EC2 インスタンスの数は作る前と同じで、境界のものは何も残っていません。
 - **費用:** t4g.micro が約 10 分、Fargate Spot の 0.25 vCPU が約 2 分。合わせて 0.01 USD 未満です。
 
+### ECS on EC2（2 回目、同じ日）
+
+churaverse の以前の dev 環境と同じ形を作りました。ECS 最適化 AL2023 の t4g.micro（ARM64）がクラスターに参加し、その上で EC2 のサービスが動きます。中身は、ゲームサーバーの代わりの nginx です。作り方は、その試験の間だけ、上の権限のポリシーを運用者のロールに付けて行いました。
+
+- **作成:** plan と apply を 7 周しました。コンテナーインスタンスがクラスターに登録され、nginx のサービスは steady state になりました。
+- **負荷試験:** `run-task` で locust を Fargate Spot で動かしました。196 リクエスト、失敗 0、終了コード 0 でした。
+- **片付け:** 15 のリソースを `delete` で消しました。ECS が INACTIVE で残すタスク定義は、Mamela のカタログにない `DeleteTaskDefinitions` で、AWS CLI で消しました。1 回目のものも含みます。
+- **権限を戻す:** 付けたポリシーを外して消しました。運用者のロールのポリシーは、前と同じ 19 で、インラインはありません。
+- **元に戻ったこと:** CLI で確かめました。
+  - IAM・EC2・ECS・Logs に、Mamela のものは何も残っていません。
+  - VPC と EC2 インスタンスの数は、触る前と同じです。
+  - terminate したインスタンスだけは、AWS の仕様で、しばらく一覧に見えます。
+
 実機で見つけ、直したことがあります。
 
 - **IAM のタグ:** 運用者のロールに `iam:TagRole` がなく、タグ付きの CreateRole が拒まれました。ロールにはタグを付けず、説明に目印を書くようにしました。
-- **ECS on EC2:** 運用者のロールでは、インスタンスプロファイルを作れず、EC2 に PassRole できるロールも限られていました。そのため、ターゲットを「IAM ロールのない EC2 の上のコンテナー」にしました。ECS on EC2 は、偽の AWS の適合試験で確かめています。
+- **ECS on EC2:** 運用者のロールでは、インスタンスプロファイルを作れず、EC2 に PassRole できるロールも限られていました。そのため、`examples/locust` のターゲットは「IAM ロールのない EC2 の上のコンテナー」にしました。
 - **Mamela 本体:** 次の 2 つを直しました。
   - メンバーのない JSON の呼び出しで、本文 `{}` を送る。
   - 観測の ID で、先頭の `/` を許す。CloudWatch Logs のロググループ名のため。
