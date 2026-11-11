@@ -1,0 +1,378 @@
+{
+  "schema": "mamela-catalog/v1",
+  "api": "ecs",
+  "entries": [
+    {
+      "method": "POST",
+      "path": "/",
+      "effect": "create",
+      "fixed": {
+        "X-Amz-Target": "AmazonEC2ContainerServiceV20141113.CreateCluster"
+      },
+      "header": [
+        "X-Amz-Target"
+      ],
+      "json": [
+        "clusterName",
+        "capacityProviders",
+        "defaultCapacityProviderStrategy",
+        "tags",
+        "settings"
+      ]
+    },
+    {
+      "method": "POST",
+      "path": "/",
+      "effect": "read",
+      "fixed": {
+        "X-Amz-Target": "AmazonEC2ContainerServiceV20141113.ListClusters"
+      },
+      "header": [
+        "X-Amz-Target"
+      ],
+      "json": [
+        "nextToken",
+        "maxResults"
+      ]
+    },
+    {
+      "method": "POST",
+      "path": "/",
+      "effect": "read",
+      "fixed": {
+        "X-Amz-Target": "AmazonEC2ContainerServiceV20141113.DescribeClusters"
+      },
+      "header": [
+        "X-Amz-Target"
+      ],
+      "json": [
+        "clusters",
+        "include"
+      ]
+    },
+    {
+      "method": "POST",
+      "path": "/",
+      "effect": "lose-data",
+      "fixed": {
+        "X-Amz-Target": "AmazonEC2ContainerServiceV20141113.DeleteCluster"
+      },
+      "header": [
+        "X-Amz-Target"
+      ],
+      "json": [
+        "cluster"
+      ],
+      "bind": [
+        "cluster"
+      ]
+    },
+    {
+      "method": "POST",
+      "path": "/",
+      "effect": "create",
+      "fixed": {
+        "X-Amz-Target": "AmazonEC2ContainerServiceV20141113.RegisterTaskDefinition"
+      },
+      "header": [
+        "X-Amz-Target"
+      ],
+      "json": [
+        "family",
+        "containerDefinitions",
+        "cpu",
+        "memory",
+        "networkMode",
+        "requiresCompatibilities",
+        "executionRoleArn",
+        "taskRoleArn",
+        "tags",
+        "runtimePlatform"
+      ],
+      "measures": [
+        {
+          "param": "cpu",
+          "name": "cpu",
+          "format": "cpu-units"
+        },
+        {
+          "param": "memory",
+          "name": "memoryMiB",
+          "format": "count"
+        }
+      ]
+    },
+    {
+      "method": "POST",
+      "path": "/",
+      "effect": "read",
+      "fixed": {
+        "X-Amz-Target": "AmazonEC2ContainerServiceV20141113.DescribeTaskDefinition"
+      },
+      "header": [
+        "X-Amz-Target"
+      ],
+      "json": [
+        "taskDefinition",
+        "include"
+      ]
+    },
+    {
+      "method": "POST",
+      "path": "/",
+      "effect": "read",
+      "fixed": {
+        "X-Amz-Target": "AmazonEC2ContainerServiceV20141113.ListTaskDefinitions"
+      },
+      "header": [
+        "X-Amz-Target"
+      ],
+      "json": [
+        "familyPrefix",
+        "status",
+        "sort",
+        "nextToken",
+        "maxResults"
+      ]
+    },
+    {
+      "method": "POST",
+      "path": "/",
+      "effect": "change",
+      "fixed": {
+        "X-Amz-Target": "AmazonEC2ContainerServiceV20141113.DeregisterTaskDefinition"
+      },
+      "header": [
+        "X-Amz-Target"
+      ],
+      "json": [
+        "taskDefinition"
+      ],
+      "bind": [
+        "taskDefinition"
+      ]
+    },
+    {
+      "method": "POST",
+      "path": "/",
+      "effect": "create",
+      "fixed": {
+        "X-Amz-Target": "AmazonEC2ContainerServiceV20141113.CreateService"
+      },
+      "header": [
+        "X-Amz-Target"
+      ],
+      "json": [
+        "cluster",
+        "serviceName",
+        "taskDefinition",
+        "desiredCount",
+        "launchType",
+        "capacityProviderStrategy",
+        "networkConfiguration",
+        "placementConstraints",
+        "placementStrategy",
+        "schedulingStrategy",
+        "deploymentConfiguration",
+        "tags",
+        "clientToken",
+        "enableECSManagedTags",
+        "propagateTags"
+      ]
+    },
+    {
+      "method": "POST",
+      "path": "/",
+      "effect": "read",
+      "fixed": {
+        "X-Amz-Target": "AmazonEC2ContainerServiceV20141113.ListServices"
+      },
+      "header": [
+        "X-Amz-Target"
+      ],
+      "json": [
+        "cluster",
+        "launchType",
+        "schedulingStrategy",
+        "nextToken",
+        "maxResults"
+      ]
+    },
+    {
+      "method": "POST",
+      "path": "/",
+      "effect": "change",
+      "fixed": {
+        "X-Amz-Target": "AmazonEC2ContainerServiceV20141113.UpdateService"
+      },
+      "header": [
+        "X-Amz-Target"
+      ],
+      "json": [
+        "cluster",
+        "service",
+        "desiredCount",
+        "taskDefinition",
+        "forceNewDeployment"
+      ],
+      "bind": [
+        "cluster",
+        "service"
+      ]
+    },
+    {
+      "method": "POST",
+      "path": "/",
+      "effect": "read",
+      "fixed": {
+        "X-Amz-Target": "AmazonEC2ContainerServiceV20141113.DescribeServices"
+      },
+      "header": [
+        "X-Amz-Target"
+      ],
+      "json": [
+        "cluster",
+        "services",
+        "include"
+      ]
+    },
+    {
+      "method": "POST",
+      "path": "/",
+      "effect": "lose-data",
+      "fixed": {
+        "X-Amz-Target": "AmazonEC2ContainerServiceV20141113.DeleteService"
+      },
+      "header": [
+        "X-Amz-Target"
+      ],
+      "json": [
+        "cluster",
+        "service",
+        "force"
+      ],
+      "bind": [
+        "cluster",
+        "service"
+      ]
+    },
+    {
+      "method": "POST",
+      "path": "/",
+      "effect": "create",
+      "fixed": {
+        "X-Amz-Target": "AmazonEC2ContainerServiceV20141113.RunTask"
+      },
+      "header": [
+        "X-Amz-Target"
+      ],
+      "json": [
+        "cluster",
+        "taskDefinition",
+        "count",
+        "launchType",
+        "capacityProviderStrategy",
+        "networkConfiguration",
+        "overrides",
+        "startedBy",
+        "clientToken",
+        "tags",
+        "enableECSManagedTags",
+        "propagateTags"
+      ],
+      "bind": [
+        "cluster"
+      ]
+    },
+    {
+      "method": "POST",
+      "path": "/",
+      "effect": "read",
+      "fixed": {
+        "X-Amz-Target": "AmazonEC2ContainerServiceV20141113.ListTasks"
+      },
+      "header": [
+        "X-Amz-Target"
+      ],
+      "json": [
+        "cluster",
+        "startedBy",
+        "family",
+        "desiredStatus",
+        "serviceName",
+        "containerInstance",
+        "nextToken",
+        "maxResults"
+      ]
+    },
+    {
+      "method": "POST",
+      "path": "/",
+      "effect": "read",
+      "fixed": {
+        "X-Amz-Target": "AmazonEC2ContainerServiceV20141113.DescribeTasks"
+      },
+      "header": [
+        "X-Amz-Target"
+      ],
+      "json": [
+        "cluster",
+        "tasks",
+        "include"
+      ]
+    },
+    {
+      "method": "POST",
+      "path": "/",
+      "effect": "restart",
+      "fixed": {
+        "X-Amz-Target": "AmazonEC2ContainerServiceV20141113.StopTask"
+      },
+      "header": [
+        "X-Amz-Target"
+      ],
+      "json": [
+        "cluster",
+        "task",
+        "reason"
+      ],
+      "bind": [
+        "cluster",
+        "task"
+      ]
+    },
+    {
+      "method": "POST",
+      "path": "/",
+      "effect": "read",
+      "fixed": {
+        "X-Amz-Target": "AmazonEC2ContainerServiceV20141113.ListContainerInstances"
+      },
+      "header": [
+        "X-Amz-Target"
+      ],
+      "json": [
+        "cluster",
+        "filter",
+        "status",
+        "nextToken",
+        "maxResults"
+      ]
+    },
+    {
+      "method": "POST",
+      "path": "/",
+      "effect": "read",
+      "fixed": {
+        "X-Amz-Target": "AmazonEC2ContainerServiceV20141113.DescribeContainerInstances"
+      },
+      "header": [
+        "X-Amz-Target"
+      ],
+      "json": [
+        "cluster",
+        "containerInstances"
+      ]
+    }
+  ]
+}

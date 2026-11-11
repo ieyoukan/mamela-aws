@@ -1,15 +1,17 @@
 package aws_test
 
 import (
+	"bytes"
 	"net/http"
+	"os"
 	"slices"
 	"strings"
 	"sync"
 	"testing"
 
 	"github.com/ieyoukan/mamela-aws/aws"
+	"github.com/ieyoukan/mamela-aws/catalogs"
 	"github.com/ieyoukan/mamela-aws/fakeaws"
-	"github.com/ieyoukan/mamela/provider/catalogs"
 	"github.com/ieyoukan/mamela/provider/protocol"
 	"github.com/ieyoukan/mamela/provider/providertest"
 )
@@ -102,7 +104,7 @@ func TestConformance(t *testing.T) {
 	}
 	providertest.Run(t, providertest.Suite{
 		Provider: providertest.BuildWASI(t, "../cmd/aws-provider"),
-		Catalogs: map[string]protocol.Catalog{"ec2": catalogs.EC2, "ecs": catalogs.ECS, "logs": catalogs.Logs, "iam": catalogs.IAM, "ssm": catalogs.SSM},
+		Catalogs: shipped(t),
 		NewAPI: func() http.Handler {
 			api := fakeaws.New()
 			return &endingTasks{api}
@@ -178,7 +180,7 @@ func TestManifest(t *testing.T) {
 // Every call the provider declares is one its API's catalog classifies: an unclassified call
 // always needs a person's approval (MAM-POL-0208), even when the request is an ordinary one.
 func TestEveryCallIsClassified(t *testing.T) {
-	cats := map[string]protocol.Catalog{"ec2": catalogs.EC2, "ecs": catalogs.ECS, "logs": catalogs.Logs, "iam": catalogs.IAM, "ssm": catalogs.SSM}
+	cats := shipped(t)
 	m := aws.Provider{}.Manifest()
 	all := append(slices.Clone(m.ObserveCalls), m.Guard.Calls...)
 	for _, k := range m.Kinds {
@@ -189,6 +191,35 @@ func TestEveryCallIsClassified(t *testing.T) {
 	for _, c := range all {
 		if v := cats[c.API].Verify(protocol.Operation{Calls: []protocol.Call{c}}); len(v.Unclassified) > 0 {
 			t.Errorf("%s %s %v: not in the %s catalog", c.Method, c.Path, c.Fixed, c.API)
+		}
+	}
+}
+
+// shipped are the catalogs as the Pome ships them (ADR 0008 of Mamela): the provider is tested
+// with what Mamela will classify its requests with.
+func shipped(t *testing.T) map[string]protocol.Catalog {
+	out := map[string]protocol.Catalog{}
+	for name := range catalogs.All {
+		out[name] = providertest.Catalog(t, "../pome/catalogs/"+name+".json")
+	}
+	return out
+}
+
+// The catalogs the Pome ships are exactly what the catalogs package writes (build.sh), and
+// mamela-provider.toml lists each of them.
+func TestShippedCatalogsAreTheSource(t *testing.T) {
+	toml, _ := os.ReadFile("../pome/mamela-provider.toml")
+	for name, c := range catalogs.All {
+		want, err := catalogs.Encode(c)
+		if err != nil {
+			t.Fatal(err)
+		}
+		got, _ := os.ReadFile("../pome/catalogs/" + name + ".json")
+		if !bytes.Equal(got, want) {
+			t.Errorf("pome/catalogs/%s.json is not what catalogs writes: run ./build.sh", name)
+		}
+		if !strings.Contains(string(toml), name+` = "catalogs/`+name+`.json"`) {
+			t.Errorf("pome/mamela-provider.toml does not list catalog %s: run ./build.sh", name)
 		}
 	}
 }

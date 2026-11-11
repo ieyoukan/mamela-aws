@@ -77,8 +77,8 @@ type instance struct {
 
 type role struct {
 	name, trust, description string
-	policies    []string
-	tags        tags
+	policies                 []string
+	tags                     tags
 }
 
 type profile struct {

@@ -1,0 +1,233 @@
+{
+  "schema": "mamela-catalog/v1",
+  "api": "iam",
+  "entries": [
+    {
+      "method": "POST",
+      "path": "/",
+      "effect": "read",
+      "form": [
+        "Action",
+        "Version",
+        "RoleName"
+      ],
+      "fixed": {
+        "Action": "GetRole",
+        "Version": "2010-05-08"
+      }
+    },
+    {
+      "method": "POST",
+      "path": "/",
+      "effect": "create",
+      "form": [
+        "Action",
+        "Version",
+        "RoleName",
+        "Path",
+        "AssumeRolePolicyDocument",
+        "Description",
+        "Tags.member.1.Key",
+        "Tags.member.1.Value",
+        "Tags.member.2.Key",
+        "Tags.member.2.Value"
+      ],
+      "fixed": {
+        "Action": "CreateRole",
+        "Version": "2010-05-08"
+      },
+      "values": {
+        "AssumeRolePolicyDocument": [
+          "{\"Version\":\"2012-10-17\",\"Statement\":[{\"Effect\":\"Allow\",\"Principal\":{\"Service\":\"ecs-tasks.amazonaws.com\"},\"Action\":\"sts:AssumeRole\"}]}",
+          "{\"Version\":\"2012-10-17\",\"Statement\":[{\"Effect\":\"Allow\",\"Principal\":{\"Service\":\"ec2.amazonaws.com\"},\"Action\":\"sts:AssumeRole\"}]}"
+        ],
+        "Path": [
+          "/mamela/"
+        ]
+      }
+    },
+    {
+      "method": "POST",
+      "path": "/",
+      "effect": "lose-data",
+      "form": [
+        "Action",
+        "Version",
+        "RoleName"
+      ],
+      "fixed": {
+        "Action": "DeleteRole",
+        "Version": "2010-05-08"
+      },
+      "bind": [
+        "RoleName"
+      ]
+    },
+    {
+      "method": "POST",
+      "path": "/",
+      "effect": "change",
+      "form": [
+        "Action",
+        "Version",
+        "RoleName",
+        "PolicyArn"
+      ],
+      "fixed": {
+        "Action": "AttachRolePolicy",
+        "Version": "2010-05-08"
+      },
+      "values": {
+        "PolicyArn": [
+          "arn:aws:iam::aws:policy/service-role/AmazonECSTaskExecutionRolePolicy",
+          "arn:aws:iam::aws:policy/service-role/AmazonEC2ContainerServiceforEC2Role"
+        ]
+      },
+      "bind": [
+        "RoleName"
+      ]
+    },
+    {
+      "method": "POST",
+      "path": "/",
+      "effect": "change",
+      "form": [
+        "Action",
+        "Version",
+        "RoleName",
+        "PolicyArn"
+      ],
+      "fixed": {
+        "Action": "DetachRolePolicy",
+        "Version": "2010-05-08"
+      },
+      "bind": [
+        "RoleName"
+      ]
+    },
+    {
+      "method": "POST",
+      "path": "/",
+      "effect": "read",
+      "form": [
+        "Action",
+        "Version",
+        "RoleName",
+        "PathPrefix",
+        "Marker",
+        "MaxItems"
+      ],
+      "fixed": {
+        "Action": "ListAttachedRolePolicies",
+        "Version": "2010-05-08"
+      }
+    },
+    {
+      "method": "POST",
+      "path": "/",
+      "effect": "read",
+      "form": [
+        "Action",
+        "Version",
+        "PathPrefix",
+        "Marker",
+        "MaxItems"
+      ],
+      "fixed": {
+        "Action": "ListRoles",
+        "Version": "2010-05-08"
+      }
+    },
+    {
+      "method": "POST",
+      "path": "/",
+      "effect": "create",
+      "form": [
+        "Action",
+        "Version",
+        "InstanceProfileName",
+        "Path",
+        "Tags.member.1.Key",
+        "Tags.member.1.Value",
+        "Tags.member.2.Key",
+        "Tags.member.2.Value"
+      ],
+      "fixed": {
+        "Action": "CreateInstanceProfile",
+        "Version": "2010-05-08"
+      },
+      "values": {
+        "Path": [
+          "/mamela/"
+        ]
+      }
+    },
+    {
+      "method": "POST",
+      "path": "/",
+      "effect": "read",
+      "form": [
+        "Action",
+        "Version",
+        "InstanceProfileName"
+      ],
+      "fixed": {
+        "Action": "GetInstanceProfile",
+        "Version": "2010-05-08"
+      }
+    },
+    {
+      "method": "POST",
+      "path": "/",
+      "effect": "change",
+      "form": [
+        "Action",
+        "Version",
+        "InstanceProfileName",
+        "RoleName"
+      ],
+      "fixed": {
+        "Action": "AddRoleToInstanceProfile",
+        "Version": "2010-05-08"
+      },
+      "bind": [
+        "RoleName"
+      ]
+    },
+    {
+      "method": "POST",
+      "path": "/",
+      "effect": "change",
+      "form": [
+        "Action",
+        "Version",
+        "InstanceProfileName",
+        "RoleName"
+      ],
+      "fixed": {
+        "Action": "RemoveRoleFromInstanceProfile",
+        "Version": "2010-05-08"
+      },
+      "bind": [
+        "RoleName"
+      ]
+    },
+    {
+      "method": "POST",
+      "path": "/",
+      "effect": "lose-data",
+      "form": [
+        "Action",
+        "Version",
+        "InstanceProfileName"
+      ],
+      "fixed": {
+        "Action": "DeleteInstanceProfile",
+        "Version": "2010-05-08"
+      },
+      "bind": [
+        "InstanceProfileName"
+      ]
+    }
+  ]
+}

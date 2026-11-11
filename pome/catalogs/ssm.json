@@ -1,0 +1,21 @@
+{
+  "schema": "mamela-catalog/v1",
+  "api": "ssm",
+  "entries": [
+    {
+      "method": "POST",
+      "path": "/",
+      "effect": "read",
+      "fixed": {
+        "X-Amz-Target": "AmazonSSM.GetParameter"
+      },
+      "header": [
+        "X-Amz-Target"
+      ],
+      "json": [
+        "Name",
+        "WithDecryption"
+      ]
+    }
+  ]
+}

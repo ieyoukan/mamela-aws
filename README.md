@@ -3,11 +3,21 @@
 [Mamela](https://github.com/ieyoukan/mamela) の AWS のプロバイダーです。専用の VPC の中に、EC2 のインスタンス、ECS のクラスター、Fargate（Spot）や EC2 のサービスを作ります。
 
 - **隔離して動く:** プロバイダーは WASM で動きます。AWS には Mamela の host を通してしかつなげません。
-- **host が持つもの:** AWS の資格情報（profile。MFA や assume-role の一時的なものでもよい）と、Mamela の AWS のカタログ（`builtin:ec2`・`ecs`・`logs`・`iam`・`ssm`）。
+- **host が持つもの:** AWS の資格情報（profile。MFA や assume-role の一時的なものでもよい）と、運用者が選んだ API のカタログです。
 - **host がすること:** 各要求に SigV4 で署名し、カタログと、その変更の許可（permit）に合う要求だけを送ります。プロバイダーは鍵を見ません。
 - **IAM の制限:** IAM のカタログは、パス `/mamela/` のロール、ECS のタスクか EC2 が引き受ける信頼ポリシー、AWS 管理の 2 つの ECS のポリシーしか許しません。プロバイダーが何を送っても、これ以外の IAM の変更は host が拒みます。
 
 設計は Mamela の ADR 0006（guard、明示操作）と ADR 0007（依存、AWS の JSON の API、一時的な資格情報、複数の API）にあります。
+
+## API のカタログ（Mamela の ADR 0008）
+
+カタログは、各呼び出しが何をするかを書いたデータです。効果、許可の ID への束縛（bind）、許す値（values）、大きさの測り方（measures）を持ちます。この Pome は、5 つの API のカタログを `pome/catalogs/*.json` に同梱しています。
+
+- **書くもの:** Go の定義は [catalogs](catalogs) にあり、`./build.sh` が JSON に書き出します。同梱する JSON が書き出しと同じことは、試験で確かめます。
+- **使われ方:** Mamela は、運用者が `mamela.providers.toml` で名指したときだけ使います（`catalog = "pome:ec2"`）。
+- **プログラムとの関係:** プロバイダーのプログラムはカタログを見ません。Mamela が、プログラムのすべての要求を、このカタログで分類します。
+- **IAM の制限:** IAM のカタログは、パス `/mamela/`、ECS のタスクか EC2 の信頼ポリシー、AWS 管理の 2 つの ECS のポリシーしか許しません。プログラムが何を送っても、これ以外の IAM の変更は Mamela が拒みます。
+- **使う前に読む:** `mamela provider catalog pome` で中身と sha256 を見られます。
 
 ## リソース
 

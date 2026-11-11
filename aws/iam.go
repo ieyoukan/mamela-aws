@@ -9,7 +9,7 @@ import (
 	"slices"
 	"strings"
 
-	"github.com/ieyoukan/mamela/provider/catalogs"
+	"github.com/ieyoukan/mamela-aws/catalogs"
 	"github.com/ieyoukan/mamela/provider/protocol"
 )
 

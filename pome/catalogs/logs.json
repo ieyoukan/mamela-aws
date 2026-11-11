@@ -1,0 +1,109 @@
+{
+  "schema": "mamela-catalog/v1",
+  "api": "logs",
+  "entries": [
+    {
+      "method": "POST",
+      "path": "/",
+      "effect": "create",
+      "fixed": {
+        "X-Amz-Target": "Logs_20140328.CreateLogGroup"
+      },
+      "header": [
+        "X-Amz-Target"
+      ],
+      "json": [
+        "logGroupName",
+        "tags"
+      ]
+    },
+    {
+      "method": "POST",
+      "path": "/",
+      "effect": "change",
+      "fixed": {
+        "X-Amz-Target": "Logs_20140328.PutRetentionPolicy"
+      },
+      "header": [
+        "X-Amz-Target"
+      ],
+      "json": [
+        "logGroupName",
+        "retentionInDays"
+      ],
+      "bind": [
+        "logGroupName"
+      ]
+    },
+    {
+      "method": "POST",
+      "path": "/",
+      "effect": "read",
+      "fixed": {
+        "X-Amz-Target": "Logs_20140328.DescribeLogGroups"
+      },
+      "header": [
+        "X-Amz-Target"
+      ],
+      "json": [
+        "logGroupNamePrefix",
+        "limit",
+        "nextToken"
+      ]
+    },
+    {
+      "method": "POST",
+      "path": "/",
+      "effect": "lose-data",
+      "fixed": {
+        "X-Amz-Target": "Logs_20140328.DeleteLogGroup"
+      },
+      "header": [
+        "X-Amz-Target"
+      ],
+      "json": [
+        "logGroupName"
+      ],
+      "bind": [
+        "logGroupName"
+      ]
+    },
+    {
+      "method": "POST",
+      "path": "/",
+      "effect": "read",
+      "fixed": {
+        "X-Amz-Target": "Logs_20140328.DescribeLogStreams"
+      },
+      "header": [
+        "X-Amz-Target"
+      ],
+      "json": [
+        "logGroupName",
+        "logStreamNamePrefix",
+        "orderBy",
+        "descending",
+        "limit",
+        "nextToken"
+      ]
+    },
+    {
+      "method": "POST",
+      "path": "/",
+      "effect": "read",
+      "fixed": {
+        "X-Amz-Target": "Logs_20140328.GetLogEvents"
+      },
+      "header": [
+        "X-Amz-Target"
+      ],
+      "json": [
+        "logGroupName",
+        "logStreamName",
+        "startFromHead",
+        "limit",
+        "nextToken"
+      ]
+    }
+  ]
+}

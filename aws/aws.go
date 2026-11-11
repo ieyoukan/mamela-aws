@@ -2,8 +2,8 @@
 // network, IAM roles for ECS, CloudWatch log groups, and ECS (clusters, container instances on
 // EC2, task definitions, services, one-off task runs). It runs as a separate, isolated program
 // (WASM): it reaches AWS only through the Mamela host, which signs each request (SigV4, with the
-// profile's temporary credentials), checks it against Mamela's catalogs (builtin:ec2, ecs, logs,
-// iam, ssm) and the change's permit, and never shows the provider a key.
+// profile's temporary credentials), checks it against the API catalogs the operator chose (this
+// Pome ships them: pome/catalogs) and the change's permit, and never shows the provider a key.
 //
 // Everything it makes carries the tags mamela:name (the resource's name) and mamela:boundary
 // (the declaration's boundary), and AWS names that start with the boundary. It changes only what

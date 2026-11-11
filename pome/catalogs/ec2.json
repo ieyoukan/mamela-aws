@@ -1,0 +1,882 @@
+{
+  "schema": "mamela-catalog/v1",
+  "api": "ec2",
+  "entries": [
+    {
+      "method": "POST",
+      "path": "/",
+      "effect": "read",
+      "form": [
+        "Action",
+        "Version",
+        "InstanceId.1",
+        "InstanceId.2",
+        "MaxResults",
+        "NextToken",
+        "Filter.1.Name",
+        "Filter.1.Value.1",
+        "Filter.1.Value.2",
+        "Filter.1.Value.3",
+        "Filter.1.Value.4",
+        "Filter.2.Name",
+        "Filter.2.Value.1",
+        "Filter.2.Value.2",
+        "Filter.2.Value.3",
+        "Filter.2.Value.4",
+        "Filter.3.Name",
+        "Filter.3.Value.1",
+        "Filter.3.Value.2",
+        "Filter.3.Value.3",
+        "Filter.3.Value.4"
+      ],
+      "fixed": {
+        "Action": "DescribeInstances",
+        "Version": "2016-11-15"
+      }
+    },
+    {
+      "method": "POST",
+      "path": "/",
+      "effect": "create",
+      "form": [
+        "Action",
+        "Version",
+        "MinCount",
+        "MaxCount",
+        "ImageId",
+        "InstanceType",
+        "SubnetId",
+        "SecurityGroupId.1",
+        "SecurityGroupId.2",
+        "UserData",
+        "ClientToken",
+        "BlockDeviceMapping.1.DeviceName",
+        "BlockDeviceMapping.1.Ebs.VolumeSize",
+        "BlockDeviceMapping.1.Ebs.VolumeType",
+        "MetadataOptions.HttpTokens",
+        "IamInstanceProfile.Name",
+        "NetworkInterface.1.DeviceIndex",
+        "NetworkInterface.1.SubnetId",
+        "NetworkInterface.1.AssociatePublicIpAddress",
+        "NetworkInterface.1.SecurityGroupId.1",
+        "NetworkInterface.1.SecurityGroupId.2",
+        "TagSpecification.1.ResourceType",
+        "TagSpecification.1.Tag.1.Key",
+        "TagSpecification.1.Tag.1.Value",
+        "TagSpecification.1.Tag.2.Key",
+        "TagSpecification.1.Tag.2.Value",
+        "TagSpecification.1.Tag.3.Key",
+        "TagSpecification.1.Tag.3.Value",
+        "TagSpecification.1.Tag.4.Key",
+        "TagSpecification.1.Tag.4.Value"
+      ],
+      "fixed": {
+        "Action": "RunInstances",
+        "MaxCount": "1",
+        "MinCount": "1",
+        "Version": "2016-11-15"
+      },
+      "measures": [
+        {
+          "param": "InstanceType",
+          "name": "cpu",
+          "format": "table",
+          "table": {
+            "c6i.2xlarge": 8,
+            "c6i.large": 2,
+            "c6i.xlarge": 4,
+            "m6i.2xlarge": 8,
+            "m6i.large": 2,
+            "m6i.xlarge": 4,
+            "m7i.2xlarge": 8,
+            "m7i.large": 2,
+            "m7i.xlarge": 4,
+            "r6i.large": 2,
+            "r6i.xlarge": 4,
+            "t3.2xlarge": 8,
+            "t3.large": 2,
+            "t3.medium": 2,
+            "t3.micro": 2,
+            "t3.nano": 2,
+            "t3.small": 2,
+            "t3.xlarge": 4,
+            "t3a.2xlarge": 8,
+            "t3a.large": 2,
+            "t3a.medium": 2,
+            "t3a.micro": 2,
+            "t3a.nano": 2,
+            "t3a.small": 2,
+            "t3a.xlarge": 4,
+            "t4g.2xlarge": 8,
+            "t4g.large": 2,
+            "t4g.medium": 2,
+            "t4g.micro": 2,
+            "t4g.nano": 2,
+            "t4g.small": 2,
+            "t4g.xlarge": 4
+          }
+        },
+        {
+          "param": "InstanceType",
+          "name": "memoryMiB",
+          "format": "table",
+          "table": {
+            "c6i.2xlarge": 16384,
+            "c6i.large": 4096,
+            "c6i.xlarge": 8192,
+            "m6i.2xlarge": 32768,
+            "m6i.large": 8192,
+            "m6i.xlarge": 16384,
+            "m7i.2xlarge": 32768,
+            "m7i.large": 8192,
+            "m7i.xlarge": 16384,
+            "r6i.large": 16384,
+            "r6i.xlarge": 32768,
+            "t3.2xlarge": 32768,
+            "t3.large": 8192,
+            "t3.medium": 4096,
+            "t3.micro": 1024,
+            "t3.nano": 512,
+            "t3.small": 2048,
+            "t3.xlarge": 16384,
+            "t3a.2xlarge": 32768,
+            "t3a.large": 8192,
+            "t3a.medium": 4096,
+            "t3a.micro": 1024,
+            "t3a.nano": 512,
+            "t3a.small": 2048,
+            "t3a.xlarge": 16384,
+            "t4g.2xlarge": 32768,
+            "t4g.large": 8192,
+            "t4g.medium": 4096,
+            "t4g.micro": 1024,
+            "t4g.nano": 512,
+            "t4g.small": 2048,
+            "t4g.xlarge": 16384
+          }
+        },
+        {
+          "param": "BlockDeviceMapping.1.Ebs.VolumeSize",
+          "name": "diskGiB",
+          "format": "count"
+        }
+      ]
+    },
+    {
+      "method": "POST",
+      "path": "/",
+      "effect": "restart",
+      "form": [
+        "Action",
+        "Version",
+        "InstanceId.1"
+      ],
+      "fixed": {
+        "Action": "StartInstances",
+        "Version": "2016-11-15"
+      },
+      "bind": [
+        "InstanceId.1"
+      ]
+    },
+    {
+      "method": "POST",
+      "path": "/",
+      "effect": "restart",
+      "form": [
+        "Action",
+        "Version",
+        "InstanceId.1"
+      ],
+      "fixed": {
+        "Action": "StopInstances",
+        "Version": "2016-11-15"
+      },
+      "bind": [
+        "InstanceId.1"
+      ]
+    },
+    {
+      "method": "POST",
+      "path": "/",
+      "effect": "restart",
+      "form": [
+        "Action",
+        "Version",
+        "InstanceId.1"
+      ],
+      "fixed": {
+        "Action": "RebootInstances",
+        "Version": "2016-11-15"
+      },
+      "bind": [
+        "InstanceId.1"
+      ]
+    },
+    {
+      "method": "POST",
+      "path": "/",
+      "effect": "change",
+      "form": [
+        "Action",
+        "Version",
+        "InstanceId",
+        "InstanceType.Value"
+      ],
+      "fixed": {
+        "Action": "ModifyInstanceAttribute",
+        "Version": "2016-11-15"
+      },
+      "measures": [
+        {
+          "param": "InstanceType.Value",
+          "name": "cpu",
+          "format": "table",
+          "table": {
+            "c6i.2xlarge": 8,
+            "c6i.large": 2,
+            "c6i.xlarge": 4,
+            "m6i.2xlarge": 8,
+            "m6i.large": 2,
+            "m6i.xlarge": 4,
+            "m7i.2xlarge": 8,
+            "m7i.large": 2,
+            "m7i.xlarge": 4,
+            "r6i.large": 2,
+            "r6i.xlarge": 4,
+            "t3.2xlarge": 8,
+            "t3.large": 2,
+            "t3.medium": 2,
+            "t3.micro": 2,
+            "t3.nano": 2,
+            "t3.small": 2,
+            "t3.xlarge": 4,
+            "t3a.2xlarge": 8,
+            "t3a.large": 2,
+            "t3a.medium": 2,
+            "t3a.micro": 2,
+            "t3a.nano": 2,
+            "t3a.small": 2,
+            "t3a.xlarge": 4,
+            "t4g.2xlarge": 8,
+            "t4g.large": 2,
+            "t4g.medium": 2,
+            "t4g.micro": 2,
+            "t4g.nano": 2,
+            "t4g.small": 2,
+            "t4g.xlarge": 4
+          }
+        },
+        {
+          "param": "InstanceType.Value",
+          "name": "memoryMiB",
+          "format": "table",
+          "table": {
+            "c6i.2xlarge": 16384,
+            "c6i.large": 4096,
+            "c6i.xlarge": 8192,
+            "m6i.2xlarge": 32768,
+            "m6i.large": 8192,
+            "m6i.xlarge": 16384,
+            "m7i.2xlarge": 32768,
+            "m7i.large": 8192,
+            "m7i.xlarge": 16384,
+            "r6i.large": 16384,
+            "r6i.xlarge": 32768,
+            "t3.2xlarge": 32768,
+            "t3.large": 8192,
+            "t3.medium": 4096,
+            "t3.micro": 1024,
+            "t3.nano": 512,
+            "t3.small": 2048,
+            "t3.xlarge": 16384,
+            "t3a.2xlarge": 32768,
+            "t3a.large": 8192,
+            "t3a.medium": 4096,
+            "t3a.micro": 1024,
+            "t3a.nano": 512,
+            "t3a.small": 2048,
+            "t3a.xlarge": 16384,
+            "t4g.2xlarge": 32768,
+            "t4g.large": 8192,
+            "t4g.medium": 4096,
+            "t4g.micro": 1024,
+            "t4g.nano": 512,
+            "t4g.small": 2048,
+            "t4g.xlarge": 16384
+          }
+        }
+      ],
+      "bind": [
+        "InstanceId"
+      ]
+    },
+    {
+      "method": "POST",
+      "path": "/",
+      "effect": "change",
+      "form": [
+        "Action",
+        "Version",
+        "ResourceId.1",
+        "Tag.1.Key",
+        "Tag.1.Value",
+        "Tag.2.Key",
+        "Tag.2.Value",
+        "Tag.3.Key",
+        "Tag.3.Value"
+      ],
+      "fixed": {
+        "Action": "CreateTags",
+        "Version": "2016-11-15"
+      },
+      "bind": [
+        "ResourceId.1"
+      ]
+    },
+    {
+      "method": "POST",
+      "path": "/",
+      "effect": "lose-data",
+      "form": [
+        "Action",
+        "Version",
+        "InstanceId.1"
+      ],
+      "fixed": {
+        "Action": "TerminateInstances",
+        "Version": "2016-11-15"
+      },
+      "bind": [
+        "InstanceId.1"
+      ]
+    },
+    {
+      "method": "POST",
+      "path": "/",
+      "effect": "read",
+      "form": [
+        "Action",
+        "Version",
+        "VpcId.1",
+        "VpcId.2",
+        "MaxResults",
+        "NextToken",
+        "Filter.1.Name",
+        "Filter.1.Value.1",
+        "Filter.1.Value.2",
+        "Filter.1.Value.3",
+        "Filter.1.Value.4",
+        "Filter.2.Name",
+        "Filter.2.Value.1",
+        "Filter.2.Value.2",
+        "Filter.2.Value.3",
+        "Filter.2.Value.4",
+        "Filter.3.Name",
+        "Filter.3.Value.1",
+        "Filter.3.Value.2",
+        "Filter.3.Value.3",
+        "Filter.3.Value.4"
+      ],
+      "fixed": {
+        "Action": "DescribeVpcs",
+        "Version": "2016-11-15"
+      }
+    },
+    {
+      "method": "POST",
+      "path": "/",
+      "effect": "create",
+      "form": [
+        "Action",
+        "Version",
+        "CidrBlock",
+        "TagSpecification.1.ResourceType",
+        "TagSpecification.1.Tag.1.Key",
+        "TagSpecification.1.Tag.1.Value",
+        "TagSpecification.1.Tag.2.Key",
+        "TagSpecification.1.Tag.2.Value",
+        "TagSpecification.1.Tag.3.Key",
+        "TagSpecification.1.Tag.3.Value",
+        "TagSpecification.1.Tag.4.Key",
+        "TagSpecification.1.Tag.4.Value"
+      ],
+      "fixed": {
+        "Action": "CreateVpc",
+        "Version": "2016-11-15"
+      }
+    },
+    {
+      "method": "POST",
+      "path": "/",
+      "effect": "lose-data",
+      "form": [
+        "Action",
+        "Version",
+        "VpcId"
+      ],
+      "fixed": {
+        "Action": "DeleteVpc",
+        "Version": "2016-11-15"
+      },
+      "bind": [
+        "VpcId"
+      ]
+    },
+    {
+      "method": "POST",
+      "path": "/",
+      "effect": "read",
+      "form": [
+        "Action",
+        "Version",
+        "SubnetId.1",
+        "SubnetId.2",
+        "MaxResults",
+        "NextToken",
+        "Filter.1.Name",
+        "Filter.1.Value.1",
+        "Filter.1.Value.2",
+        "Filter.1.Value.3",
+        "Filter.1.Value.4",
+        "Filter.2.Name",
+        "Filter.2.Value.1",
+        "Filter.2.Value.2",
+        "Filter.2.Value.3",
+        "Filter.2.Value.4",
+        "Filter.3.Name",
+        "Filter.3.Value.1",
+        "Filter.3.Value.2",
+        "Filter.3.Value.3",
+        "Filter.3.Value.4"
+      ],
+      "fixed": {
+        "Action": "DescribeSubnets",
+        "Version": "2016-11-15"
+      }
+    },
+    {
+      "method": "POST",
+      "path": "/",
+      "effect": "create",
+      "form": [
+        "Action",
+        "Version",
+        "VpcId",
+        "CidrBlock",
+        "AvailabilityZone",
+        "TagSpecification.1.ResourceType",
+        "TagSpecification.1.Tag.1.Key",
+        "TagSpecification.1.Tag.1.Value",
+        "TagSpecification.1.Tag.2.Key",
+        "TagSpecification.1.Tag.2.Value",
+        "TagSpecification.1.Tag.3.Key",
+        "TagSpecification.1.Tag.3.Value",
+        "TagSpecification.1.Tag.4.Key",
+        "TagSpecification.1.Tag.4.Value"
+      ],
+      "fixed": {
+        "Action": "CreateSubnet",
+        "Version": "2016-11-15"
+      }
+    },
+    {
+      "method": "POST",
+      "path": "/",
+      "effect": "lose-data",
+      "form": [
+        "Action",
+        "Version",
+        "SubnetId"
+      ],
+      "fixed": {
+        "Action": "DeleteSubnet",
+        "Version": "2016-11-15"
+      },
+      "bind": [
+        "SubnetId"
+      ]
+    },
+    {
+      "method": "POST",
+      "path": "/",
+      "effect": "read",
+      "form": [
+        "Action",
+        "Version",
+        "InternetGatewayId.1",
+        "InternetGatewayId.2",
+        "MaxResults",
+        "NextToken",
+        "Filter.1.Name",
+        "Filter.1.Value.1",
+        "Filter.1.Value.2",
+        "Filter.1.Value.3",
+        "Filter.1.Value.4",
+        "Filter.2.Name",
+        "Filter.2.Value.1",
+        "Filter.2.Value.2",
+        "Filter.2.Value.3",
+        "Filter.2.Value.4",
+        "Filter.3.Name",
+        "Filter.3.Value.1",
+        "Filter.3.Value.2",
+        "Filter.3.Value.3",
+        "Filter.3.Value.4"
+      ],
+      "fixed": {
+        "Action": "DescribeInternetGateways",
+        "Version": "2016-11-15"
+      }
+    },
+    {
+      "method": "POST",
+      "path": "/",
+      "effect": "create",
+      "form": [
+        "Action",
+        "Version",
+        "TagSpecification.1.ResourceType",
+        "TagSpecification.1.Tag.1.Key",
+        "TagSpecification.1.Tag.1.Value",
+        "TagSpecification.1.Tag.2.Key",
+        "TagSpecification.1.Tag.2.Value",
+        "TagSpecification.1.Tag.3.Key",
+        "TagSpecification.1.Tag.3.Value",
+        "TagSpecification.1.Tag.4.Key",
+        "TagSpecification.1.Tag.4.Value"
+      ],
+      "fixed": {
+        "Action": "CreateInternetGateway",
+        "Version": "2016-11-15"
+      }
+    },
+    {
+      "method": "POST",
+      "path": "/",
+      "effect": "change",
+      "form": [
+        "Action",
+        "Version",
+        "InternetGatewayId",
+        "VpcId"
+      ],
+      "fixed": {
+        "Action": "AttachInternetGateway",
+        "Version": "2016-11-15"
+      },
+      "bind": [
+        "InternetGatewayId"
+      ]
+    },
+    {
+      "method": "POST",
+      "path": "/",
+      "effect": "change",
+      "form": [
+        "Action",
+        "Version",
+        "InternetGatewayId",
+        "VpcId"
+      ],
+      "fixed": {
+        "Action": "DetachInternetGateway",
+        "Version": "2016-11-15"
+      },
+      "bind": [
+        "InternetGatewayId"
+      ]
+    },
+    {
+      "method": "POST",
+      "path": "/",
+      "effect": "lose-data",
+      "form": [
+        "Action",
+        "Version",
+        "InternetGatewayId"
+      ],
+      "fixed": {
+        "Action": "DeleteInternetGateway",
+        "Version": "2016-11-15"
+      },
+      "bind": [
+        "InternetGatewayId"
+      ]
+    },
+    {
+      "method": "POST",
+      "path": "/",
+      "effect": "read",
+      "form": [
+        "Action",
+        "Version",
+        "RouteTableId.1",
+        "RouteTableId.2",
+        "MaxResults",
+        "NextToken",
+        "Filter.1.Name",
+        "Filter.1.Value.1",
+        "Filter.1.Value.2",
+        "Filter.1.Value.3",
+        "Filter.1.Value.4",
+        "Filter.2.Name",
+        "Filter.2.Value.1",
+        "Filter.2.Value.2",
+        "Filter.2.Value.3",
+        "Filter.2.Value.4",
+        "Filter.3.Name",
+        "Filter.3.Value.1",
+        "Filter.3.Value.2",
+        "Filter.3.Value.3",
+        "Filter.3.Value.4"
+      ],
+      "fixed": {
+        "Action": "DescribeRouteTables",
+        "Version": "2016-11-15"
+      }
+    },
+    {
+      "method": "POST",
+      "path": "/",
+      "effect": "create",
+      "form": [
+        "Action",
+        "Version",
+        "VpcId",
+        "TagSpecification.1.ResourceType",
+        "TagSpecification.1.Tag.1.Key",
+        "TagSpecification.1.Tag.1.Value",
+        "TagSpecification.1.Tag.2.Key",
+        "TagSpecification.1.Tag.2.Value",
+        "TagSpecification.1.Tag.3.Key",
+        "TagSpecification.1.Tag.3.Value",
+        "TagSpecification.1.Tag.4.Key",
+        "TagSpecification.1.Tag.4.Value"
+      ],
+      "fixed": {
+        "Action": "CreateRouteTable",
+        "Version": "2016-11-15"
+      }
+    },
+    {
+      "method": "POST",
+      "path": "/",
+      "effect": "change",
+      "form": [
+        "Action",
+        "Version",
+        "RouteTableId",
+        "DestinationCidrBlock",
+        "GatewayId"
+      ],
+      "fixed": {
+        "Action": "CreateRoute",
+        "Version": "2016-11-15"
+      },
+      "bind": [
+        "RouteTableId"
+      ]
+    },
+    {
+      "method": "POST",
+      "path": "/",
+      "effect": "change",
+      "form": [
+        "Action",
+        "Version",
+        "RouteTableId",
+        "SubnetId"
+      ],
+      "fixed": {
+        "Action": "AssociateRouteTable",
+        "Version": "2016-11-15"
+      },
+      "bind": [
+        "RouteTableId"
+      ]
+    },
+    {
+      "method": "POST",
+      "path": "/",
+      "effect": "change",
+      "form": [
+        "Action",
+        "Version",
+        "AssociationId"
+      ],
+      "fixed": {
+        "Action": "DisassociateRouteTable",
+        "Version": "2016-11-15"
+      },
+      "bind": [
+        "AssociationId"
+      ]
+    },
+    {
+      "method": "POST",
+      "path": "/",
+      "effect": "lose-data",
+      "form": [
+        "Action",
+        "Version",
+        "RouteTableId"
+      ],
+      "fixed": {
+        "Action": "DeleteRouteTable",
+        "Version": "2016-11-15"
+      },
+      "bind": [
+        "RouteTableId"
+      ]
+    },
+    {
+      "method": "POST",
+      "path": "/",
+      "effect": "read",
+      "form": [
+        "Action",
+        "Version",
+        "GroupId.1",
+        "GroupId.2",
+        "MaxResults",
+        "NextToken",
+        "Filter.1.Name",
+        "Filter.1.Value.1",
+        "Filter.1.Value.2",
+        "Filter.1.Value.3",
+        "Filter.1.Value.4",
+        "Filter.2.Name",
+        "Filter.2.Value.1",
+        "Filter.2.Value.2",
+        "Filter.2.Value.3",
+        "Filter.2.Value.4",
+        "Filter.3.Name",
+        "Filter.3.Value.1",
+        "Filter.3.Value.2",
+        "Filter.3.Value.3",
+        "Filter.3.Value.4"
+      ],
+      "fixed": {
+        "Action": "DescribeSecurityGroups",
+        "Version": "2016-11-15"
+      }
+    },
+    {
+      "method": "POST",
+      "path": "/",
+      "effect": "create",
+      "form": [
+        "Action",
+        "Version",
+        "GroupName",
+        "GroupDescription",
+        "VpcId",
+        "TagSpecification.1.ResourceType",
+        "TagSpecification.1.Tag.1.Key",
+        "TagSpecification.1.Tag.1.Value",
+        "TagSpecification.1.Tag.2.Key",
+        "TagSpecification.1.Tag.2.Value",
+        "TagSpecification.1.Tag.3.Key",
+        "TagSpecification.1.Tag.3.Value",
+        "TagSpecification.1.Tag.4.Key",
+        "TagSpecification.1.Tag.4.Value"
+      ],
+      "fixed": {
+        "Action": "CreateSecurityGroup",
+        "Version": "2016-11-15"
+      }
+    },
+    {
+      "method": "POST",
+      "path": "/",
+      "effect": "change",
+      "form": [
+        "Action",
+        "Version",
+        "GroupId",
+        "IpPermissions.1.IpProtocol",
+        "IpPermissions.1.FromPort",
+        "IpPermissions.1.ToPort",
+        "IpPermissions.1.Groups.1.GroupId",
+        "IpPermissions.1.IpRanges.1.CidrIp",
+        "IpPermissions.2.IpProtocol",
+        "IpPermissions.2.FromPort",
+        "IpPermissions.2.ToPort",
+        "IpPermissions.2.Groups.1.GroupId",
+        "IpPermissions.2.IpRanges.1.CidrIp",
+        "IpPermissions.3.IpProtocol",
+        "IpPermissions.3.FromPort",
+        "IpPermissions.3.ToPort",
+        "IpPermissions.3.Groups.1.GroupId",
+        "IpPermissions.3.IpRanges.1.CidrIp",
+        "IpPermissions.4.IpProtocol",
+        "IpPermissions.4.FromPort",
+        "IpPermissions.4.ToPort",
+        "IpPermissions.4.Groups.1.GroupId",
+        "IpPermissions.4.IpRanges.1.CidrIp"
+      ],
+      "fixed": {
+        "Action": "AuthorizeSecurityGroupIngress",
+        "Version": "2016-11-15"
+      },
+      "bind": [
+        "GroupId"
+      ]
+    },
+    {
+      "method": "POST",
+      "path": "/",
+      "effect": "change",
+      "form": [
+        "Action",
+        "Version",
+        "GroupId",
+        "IpPermissions.1.IpProtocol",
+        "IpPermissions.1.FromPort",
+        "IpPermissions.1.ToPort",
+        "IpPermissions.1.Groups.1.GroupId",
+        "IpPermissions.1.IpRanges.1.CidrIp",
+        "IpPermissions.2.IpProtocol",
+        "IpPermissions.2.FromPort",
+        "IpPermissions.2.ToPort",
+        "IpPermissions.2.Groups.1.GroupId",
+        "IpPermissions.2.IpRanges.1.CidrIp",
+        "IpPermissions.3.IpProtocol",
+        "IpPermissions.3.FromPort",
+        "IpPermissions.3.ToPort",
+        "IpPermissions.3.Groups.1.GroupId",
+        "IpPermissions.3.IpRanges.1.CidrIp",
+        "IpPermissions.4.IpProtocol",
+        "IpPermissions.4.FromPort",
+        "IpPermissions.4.ToPort",
+        "IpPermissions.4.Groups.1.GroupId",
+        "IpPermissions.4.IpRanges.1.CidrIp"
+      ],
+      "fixed": {
+        "Action": "RevokeSecurityGroupIngress",
+        "Version": "2016-11-15"
+      },
+      "bind": [
+        "GroupId"
+      ]
+    },
+    {
+      "method": "POST",
+      "path": "/",
+      "effect": "lose-data",
+      "form": [
+        "Action",
+        "Version",
+        "GroupId"
+      ],
+      "fixed": {
+        "Action": "DeleteSecurityGroup",
+        "Version": "2016-11-15"
+      },
+      "bind": [
+        "GroupId"
+      ]
+    }
+  ]
+}
