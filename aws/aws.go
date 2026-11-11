@@ -385,6 +385,14 @@ func queryCall(api, action string, params ...string) protocol.Call {
 		Fixed: map[string]string{"Action": action, "Version": version}}
 }
 
+// fix adds fixed parameters (name, value, ...) to a declared call.
+func fix(c protocol.Call, kv ...string) protocol.Call {
+	for i := 0; i+1 < len(kv); i += 2 {
+		c.Fixed[kv[i]] = kv[i+1]
+	}
+	return c
+}
+
 func jsonCall(api, action string, members ...string) protocol.Call {
 	return protocol.Call{API: api, Method: "POST", Path: "/", Header: []string{target}, JSON: members,
 		Fixed: map[string]string{target: targetOf(api, action)}}

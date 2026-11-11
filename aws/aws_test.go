@@ -174,3 +174,21 @@ func TestManifest(t *testing.T) {
 		t.Error("no service kind")
 	}
 }
+
+// Every call the provider declares is one its API's catalog classifies: an unclassified call
+// always needs a person's approval (MAM-POL-0208), even when the request is an ordinary one.
+func TestEveryCallIsClassified(t *testing.T) {
+	cats := map[string]protocol.Catalog{"ec2": catalogs.EC2, "ecs": catalogs.ECS, "logs": catalogs.Logs, "iam": catalogs.IAM, "ssm": catalogs.SSM}
+	m := aws.Provider{}.Manifest()
+	all := append(slices.Clone(m.ObserveCalls), m.Guard.Calls...)
+	for _, k := range m.Kinds {
+		for _, o := range k.Operations {
+			all = append(all, o.Calls...)
+		}
+	}
+	for _, c := range all {
+		if v := cats[c.API].Verify(protocol.Operation{Calls: []protocol.Call{c}}); len(v.Unclassified) > 0 {
+			t.Errorf("%s %s %v: not in the %s catalog", c.Method, c.Path, c.Fixed, c.API)
+		}
+	}
+}

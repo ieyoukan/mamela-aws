@@ -38,10 +38,11 @@ var (
 	describeInstances = queryCall(APIEC2, "DescribeInstances", "Filter.1.Name", "Filter.1.Value.1", "Filter.2.Name", "Filter.2.Value.1",
 		"Filter.2.Value.2", "Filter.2.Value.3", "Filter.2.Value.4", "MaxResults", "NextToken")
 	getParameter = jsonCall(APISSM, "GetParameter", "Name")
-	runInstances = queryCall(APIEC2, "RunInstances", append([]string{"MinCount", "MaxCount", "ImageId", "InstanceType", "ClientToken", "UserData",
+	// One instance a request: MinCount and MaxCount are fixed, as the catalog fixes them.
+	runInstances = fix(queryCall(APIEC2, "RunInstances", append([]string{"MinCount", "MaxCount", "ImageId", "InstanceType", "ClientToken", "UserData",
 		"MetadataOptions.HttpTokens", "IamInstanceProfile.Name", "NetworkInterface.1.DeviceIndex", "NetworkInterface.1.SubnetId",
 		"NetworkInterface.1.AssociatePublicIpAddress", "NetworkInterface.1.SecurityGroupId.1", "TagSpecification.1.Tag.4.Key",
-		"TagSpecification.1.Tag.4.Value"}, ec2TagParams...)...)
+		"TagSpecification.1.Tag.4.Value"}, ec2TagParams...)...), "MinCount", "1", "MaxCount", "1")
 	startInstances     = queryCall(APIEC2, "StartInstances", "InstanceId.1")
 	terminateInstances = queryCall(APIEC2, "TerminateInstances", "InstanceId.1")
 )
