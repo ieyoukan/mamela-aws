@@ -3,4 +3,4 @@
 provider = "aws"
 version = "0.1.0"
 program = "provider.wasm"
-sha256 = "58eaf6c3e37eac6bc19a304af5c45b1507a622f1a78d7d158092a4e623a926fb"
+sha256 = "4ba7cf70f56be525c38d99b71448c4fb43100791704bb9d37231ab159d300c76"
