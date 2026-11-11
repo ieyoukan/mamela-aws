@@ -1,5 +1,5 @@
-# The load test of a locust on Fargate Spot against nginx on an ECS container instance, in a VPC of
-# its own: nothing outside the boundary "locust" is read for a change or touched.
+# The load test of a locust on Fargate Spot against nginx on an EC2 instance, in a VPC of its own:
+# nothing outside the boundary "locust" is changed.
 #
 #   mamela plan / apply   creates it, in rounds as what each resource needs is created
 #   mamela act --confirm locust run-task "AwsEcsService locust" .
@@ -24,18 +24,15 @@ import Aws.{
   LogGroup,
   Role,
   EcsTasks,
-  Ec2Instances,
   Cluster,
   Instance,
+  RunsContainer,
   Container,
-  Port,
   Plain,
   PrivateIp,
   TaskDefinition,
-  RunsOnEc2,
   RunsOnFargate,
   Service,
-  OnEc2,
   OnFargateSpot,
 }
 
@@ -55,37 +52,19 @@ fn infrastructure() -> Mamela.Graph {
     description: "the target, reached from the load generator",
   )
 
-  logs = LogGroup(name: "locust", retention_days: 7)
-  execution = Role(name: "task-execution", trust: EcsTasks)
-  instance_role = Role(name: "instance", trust: Ec2Instances)
-  main = Cluster(name: "main")
+  # The target: nginx on one EC2 instance (no IAM role), reached only from the load generator.
   host = Instance(
     name: "target",
-    cluster: main,
     subnet: public,
     group: target,
-    role: instance_role,
     instance_type: "t4g.micro",
+    does: RunsContainer(image: "public.ecr.aws/nginx/nginx:stable", port: 80),
   )
 
-  nginx = TaskDefinition(
-    name: "nginx",
-    runs: RunsOnEc2,
-    cpu: 128,
-    memory_mib: 128,
-    execution_role: execution,
-    log_group: logs,
-    containers: [
-      Container(
-        name: "nginx",
-        image: "public.ecr.aws/nginx/nginx:stable",
-        command: [],
-        environment: [],
-        ports: [Port(container: 80, host: 80)],
-        memory_mib: 0,
-      ),
-    ],
-  )
+  # The load generator: locust on Fargate Spot, in a service of 0 tasks that run-task runs once.
+  logs = LogGroup(name: "locust", retention_days: 7)
+  execution = Role(name: "task-execution", trust: EcsTasks)
+  main = Cluster(name: "main")
   locust = TaskDefinition(
     name: "locust",
     runs: RunsOnFargate,
@@ -126,16 +105,10 @@ fn infrastructure() -> Mamela.Graph {
     |> Aws.route_table(b, routes)
     |> Aws.security_group(b, load, [])
     |> Aws.security_group(b, target, [FromGroup(port: 80, group: load)])
+    |> Aws.instance(b, host)
     |> Aws.log_group(b, logs)
     |> Aws.role(b, execution)
-    |> Aws.role(b, instance_role)
     |> Aws.cluster(b, main)
-    |> Aws.instance(b, host)
-    |> Aws.task_definition(b, nginx)
-    |> Aws.service(
-      b,
-      Service(name: "target", cluster: main, task_definition: nginx, count: 1, launch: OnEc2),
-    )
     |> Aws.task_definition(b, locust)
     |> Aws.service(
       b,

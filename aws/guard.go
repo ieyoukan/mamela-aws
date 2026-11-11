@@ -257,7 +257,8 @@ func checkRequest(s GuardSettings, w world, created map[string]bool, a protocol.
 		defer func() { created[n] = true }()
 	}
 	// ... and tagged with it.
-	if isCreate && act != "CreateLogGroup" && boundaryTag(a) != b {
+	// (A log group is named after it; a profile, after its role.)
+	if isCreate && act != "CreateLogGroup" && act != "CreateInstanceProfile" && boundaryTag(a) != b {
 		out = append(out, fmt.Sprintf("creates something tagged %s=%q", TagBoundary, boundaryTag(a)))
 	}
 	switch a.API {
@@ -309,6 +310,9 @@ func boundaryTag(a protocol.Approved) string {
 		case strings.HasSuffix(k, ".Key"): // EC2 TagSpecification.1.Tag.N.Key, IAM Tags.member.N.Key
 			return param(a, strings.TrimSuffix(k, ".Key")+".Value")
 		}
+	}
+	if b, _, ok := markedBy(param(a, "Description")); ok && action(a) == "CreateRole" {
+		return b // a role's marker
 	}
 	if v := a.Params["tags"]; len(v) == 1 {
 		var tags []ecsTag

@@ -226,7 +226,7 @@ type Container struct {
 }
 
 // Env is an environment variable: Value, or Prefix and the private IP address of the
-// AwsEcsInstance InstanceIP ("http://10.0.1.5").
+// AwsInstance InstanceIP ("http://10.0.1.5").
 type Env struct {
 	Name       string `json:"name"`
 	Value      string `json:"value,omitempty"`

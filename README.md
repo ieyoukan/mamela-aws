@@ -1,6 +1,6 @@
 # mamela-aws
 
-[Mamela](https://github.com/ieyoukan/mamela) の AWS のプロバイダーです。専用の VPC の中に、ECS のクラスター、EC2 のコンテナーインスタンス、Fargate（Spot）のサービスを作ります。
+[Mamela](https://github.com/ieyoukan/mamela) の AWS のプロバイダーです。専用の VPC の中に、EC2 のインスタンス、ECS のクラスター、Fargate（Spot）や EC2 のサービスを作ります。
 
 - **隔離して動く:** プロバイダーは WASM で動きます。AWS には Mamela の host を通してしかつなげません。
 - **host が持つもの:** AWS の資格情報（profile。MFA や assume-role の一時的なものでもよい）と、Mamela の AWS のカタログ（`builtin:ec2`・`ecs`・`logs`・`iam`・`ssm`）。
@@ -21,14 +21,20 @@
 | `AwsRouteTable` | ルートテーブル（0.0.0.0/0 をゲートウェイへ、サブネットに関連付け） | `create`、`route` |
 | `AwsSecurityGroup` | セキュリティグループと、TCP のインバウンドの規則 | `create`、`ingress`（規則は足すだけ） |
 | `AwsLogGroup` | CloudWatch Logs のロググループ `/mamela/<境界>/<名前>` | `create`、`retention` |
-| `AwsIamRole` | `/mamela/` のロール（EC2 用はインスタンスプロファイルも） | `create`、`policy` |
+| `AwsIamRole` | `/mamela/` のロール（EC2 用はインスタンスプロファイルも）。タグは付けず、説明に目印（`Mamela: mamela:boundary=… mamela:name=…`）を書く | `create`、`policy` |
 | `AwsEcsCluster` | ECS のクラスター（Fargate と Fargate Spot。Container Insights は無効） | `create` |
-| `AwsEcsInstance` | ECS 最適化 Amazon Linux 2023 の EC2 インスタンス（クラスターに参加。IMDSv2 のみ） | `create`、`start` |
+| `AwsInstance` | ECS 最適化 Amazon Linux 2023 の EC2 インスタンス（IMDSv2 のみ）。次のどちらかをする。<br>・ロールのインスタンスプロファイルで、クラスターに参加する<br>・IAM ロールなしで、コンテナーを 1 つ Docker で動かす<br>起動スクリプトはプロバイダーが書く。宣言が渡せるのは、検査したイメージ名とポートだけ | `create`、`start` |
 | `AwsEcsTaskDefinition` | タスク定義 | `create`、`revise`（新しいリビジョンを登録して、古いものを登録解除） |
 | `AwsEcsService` | サービス | `create`、`update`（タスクの数、タスク定義） |
 
 - **依存:** 別のリソースの ID が要るリソース（VPC の中のサブネットなど）は、Pome が `after` を付けます。依存先ができるまで、そのリソースは待ちます（MAM-PLAN-0113）。依存の深さの回数だけ plan と apply を繰り返すと、すべてができます。
-- **しないこと:** CIDR、型、ネットワークの変更などは、差分としては示し（`replace`）、Mamela が拒みます。規則やポリシーを外すこともしません。
+- **しないこと:** CIDR、型、ネットワーク、インスタンスの役目の変更などは、差分としては示し（`replace`）、Mamela が拒みます。規則やポリシーを外すこともしません。
+- **IAM ロールにタグを付けない理由:** タグには `iam:TagRole` が要ります。運用者のロールには、この権限がないことが珍しくありません（検証に使ったロールにもありませんでした）。持ち主は、パス `/mamela/`、説明の目印、Mamela の作成記録で確かめます。
+- **ECS on EC2 に要る権限:** コンテナーインスタンス（クラスターに参加するインスタンス）には、運用者のロールに次の 2 つが要ります。
+  - `iam:CreateInstanceProfile` などのインスタンスプロファイルの権限
+  - そのロールを EC2 に渡す `iam:PassRole`
+  
+  これらがない環境では、コンテナーを動かすインスタンスと Fargate を使います。
 - **宣言を消しても、何も消しません。** 消すのは、次の明示操作だけです。
 
 ### 明示操作
@@ -57,16 +63,21 @@ plan には入らず、人が名前を打ち直したときだけ行う操作で
 
 ## 例: locust の負荷試験（[examples/locust](examples/locust)）
 
-Fargate Spot の locust が、EC2 のコンテナーインスタンス上の nginx（ECS のサービス）に負荷をかけます。どちらも専用の VPC の中にあり、境界の外のものには触れません。
+Fargate Spot の locust が、EC2 のインスタンス上の nginx に負荷をかけます。どちらも専用の VPC の中にあり、境界の外のものには触れません。
+
+churaverse_infra の terraform/locust との対応:
+
+- **同じもの:** locust の構成。Fargate のタスク、専用のセキュリティグループ、7 日のロググループ、ターゲットの tcp/80 は locust のグループからだけ受ける。
+- **違うもの:** ターゲット。元の ECS on EC2 のゲームサーバーではなく、専用の nginx にする。既存のサービスに負荷はかけない。
 
 ```text
 VPC 10.42.0.0/16 ── internet gateway
  └ public subnet 10.42.1.0/24（route table: 0.0.0.0/0 → igw）
-    ├ EC2 t4g.micro（ECS 最適化 AL2023、SG target: tcp/80 は SG locust からだけ）
-    │   └ service target: nginx（EC2、bridge、hostPort 80）
-    └ service locust（Fargate Spot、タスク数 0、SG locust）
+    ├ EC2 t4g.micro（ECS 最適化 AL2023、IAM ロールなし、SG target: tcp/80 は SG locust からだけ）
+    │   └ docker: nginx（:80）
+    └ ECS cluster locust-main ─ service locust（Fargate Spot、タスク数 0、SG locust）
         └ run-task: locust --headless -u 5 -r 1 -t 1m（LOCUST_HOST=http://<EC2 の private IP>）
-CloudWatch Logs /mamela/locust/locust（7 日）、IAM /mamela/locust-task-execution・locust-instance
+CloudWatch Logs /mamela/locust/locust（7 日）、IAM /mamela/locust-task-execution
 ```
 
 ### 費用の目安（ap-northeast-1）
@@ -84,12 +95,12 @@ CloudWatch Logs /mamela/locust/locust（7 日）、IAM /mamela/locust-task-execu
 3. **作る:** `mamela plan examples/locust` と `mamela apply examples/locust` を、待つリソースがなくなるまで繰り返します。
 4. **試験する:** `mamela act --confirm locust run-task "AwsEcsService locust" examples/locust` を実行します。locust の結果は `/mamela/locust/locust` のロググループに出ます。
 5. **消す:** 宣言から消してから、次の順に `mamela act --confirm <名前> delete <リソース> examples/locust` を実行します。
-   1. `AwsEcsService locust`、`AwsEcsService target`
-   2. `AwsEcsInstance target`
+   1. `AwsEcsService locust`
+   2. `AwsInstance target`
    3. `AwsEcsCluster main`
-   4. `AwsEcsTaskDefinition locust`、`AwsEcsTaskDefinition nginx`
+   4. `AwsEcsTaskDefinition locust`
    5. `AwsLogGroup locust`
-   6. `AwsIamRole instance`、`AwsIamRole task-execution`
+   6. `AwsIamRole task-execution`
    7. `AwsSecurityGroup target`、`AwsSecurityGroup locust`
    8. `AwsRouteTable public`
    9. `AwsSubnet public`
@@ -109,6 +120,8 @@ go test ./...               # 適合試験（Mamela の providertest）、guard�
   - 宣言を消したものを残すこと
   - どの要求で応答が失われても、送れなくても、やり直して収束すること
   - `run-task` と、消す順の明示操作
+  - ECS on EC2（クラスターに参加するインスタンス）
+  - IAM のタグを付けないこと（偽の AWS は、タグ付きの作成を AccessDenied で拒む）
   - 他人のインスタンス、クラスター、VPC に触れないこと
 - **Pome の試験:** Emela の Pome は `pome/` にあり、`emela test` で確かめます。
 - **公開前の注意:** Mamela Pome 0.3.0 と、この Pome の公開までは、`[replace]` で隣の mamela のチェックアウトを使います。

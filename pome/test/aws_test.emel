@@ -1,5 +1,17 @@
 import Lib
-import Lib.{Boundary, Vpc, Subnet, SecurityGroup, FromGroup, Role, Ec2Instances, Cluster, Instance}
+import Lib.{
+  Boundary,
+  Vpc,
+  Subnet,
+  SecurityGroup,
+  FromGroup,
+  Role,
+  Ec2Instances,
+  Cluster,
+  Instance,
+  JoinsCluster,
+  RunsContainer,
+}
 import Mamela
 
 @test
@@ -32,16 +44,32 @@ fn an_instance_role_has_a_profile() {
   net = Vpc(name: "net", cidr: "10.42.0.0/16")
   role = Role(name: "instance", trust: Ec2Instances)
   i = Instance(
-    name: "target",
-    cluster: Cluster(name: "main"),
+    name: "host",
     subnet: Subnet(name: "public", vpc: net, cidr: "10.42.1.0/24", zone: "z"),
     group: SecurityGroup(name: "target", vpc: net, description: "t"),
-    role:,
     instance_type: "t4g.micro",
+    does: JoinsCluster(cluster: Cluster(name: "main"), role:),
   )
   json = Mamela.to_json(Mamela.empty() |> Lib.role(b, role) |> Lib.instance(b, i))
   assert json.contains("\"instanceProfile\":true,\"policy\":\"ecs-for-ec2\",\"trust\":\"ec2\"")
   assert json.contains(
-    "\"after\":[\"AwsEcsCluster main\",\"AwsSubnet public\",\"AwsSecurityGroup target\",\"AwsIamRole instance\"]",
+    "\"after\":[\"AwsSubnet public\",\"AwsSecurityGroup target\",\"AwsEcsCluster main\",\"AwsIamRole instance\"]",
+  )
+}
+
+@test
+fn an_instance_that_runs_a_container_has_no_role() {
+  b = Boundary(name: "lt")
+  net = Vpc(name: "net", cidr: "10.42.0.0/16")
+  i = Instance(
+    name: "target",
+    subnet: Subnet(name: "public", vpc: net, cidr: "10.42.1.0/24", zone: "z"),
+    group: SecurityGroup(name: "target", vpc: net, description: "t"),
+    instance_type: "t4g.micro",
+    does: RunsContainer(image: "public.ecr.aws/nginx/nginx:stable", port: 80),
+  )
+  json = Mamela.to_json(Mamela.empty() |> Lib.instance(b, i))
+  assert json.contains(
+    "{\"after\":[\"AwsSubnet public\",\"AwsSecurityGroup target\"],\"kind\":\"AwsInstance\",\"name\":\"target\",\"provider\":\"aws\",\"spec\":{\"boundary\":\"lt\",\"container\":{\"image\":\"public.ecr.aws/nginx/nginx:stable\",\"port\":80},\"instanceType\":\"t4g.micro\",\"securityGroup\":\"target\",\"subnet\":\"public\"}}",
   )
 }

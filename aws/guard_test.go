@@ -33,20 +33,22 @@ func TestGuardKeepsTheBoundary(t *testing.T) {
 		{"terminating someone else's instance", queryReq(APIEC2, "TerminateInstances", map[string]string{"InstanceId.1": "i-other"}), "i-other"},
 		{"an instance of a type not allowed", queryReq(APIEC2, "RunInstances", ec2Tags("instance", "locust", "target", map[string]string{"InstanceType": "m7i.large",
 			"NetworkInterface.1.SubnetId": "subnet-1", "NetworkInterface.1.SecurityGroupId.1": "sg-1", "IamInstanceProfile.Name": "locust-instance"})), "m7i.large"},
-		{"a role not named after the boundary", queryReq(APIIAM, "CreateRole", iamTags("locust", "admin", map[string]string{"RoleName": "admin"})), `"admin"`},
+		{"a role not named after the boundary", queryReq(APIIAM, "CreateRole", map[string]string{"RoleName": "admin", "Description": RoleMarker("locust", "admin")}), `"admin"`},
+		{"a role marked for another boundary", queryReq(APIIAM, "CreateRole", map[string]string{"RoleName": "locust-x", "Description": RoleMarker("prod", "x")}), `mamela:boundary="prod"`},
+		{"a role with no marker", queryReq(APIIAM, "CreateRole", map[string]string{"RoleName": "locust-x"}), `mamela:boundary=""`},
 		{"a role and its policy", queryReq(APIIAM, "AttachRolePolicy", map[string]string{"RoleName": "locust-new", "PolicyArn": "arn"}), ""}, // created by the change
 		{"a policy on someone else's role", queryReq(APIIAM, "AttachRolePolicy", map[string]string{"RoleName": "OrganizationAccountAccessRole", "PolicyArn": "arn"}), "OrganizationAccountAccessRole"},
 		{"a service in someone else's cluster", jsonReq(APIECS, "UpdateService", map[string]any{"cluster": "prod", "service": "web", "desiredCount": 0}), "cluster prod"},
 		{"a task in someone else's subnet", jsonReq(APIECS, "RunTask", map[string]any{"cluster": "locust-main", "taskDefinition": "mamela-locust-web:1", "count": 1,
 			"networkConfiguration": map[string]any{"awsvpcConfiguration": map[string]any{"subnets": []string{"subnet-other"}, "securityGroups": []string{"sg-1"}}},
-			"tags": ecsTags("locust", "web")}), "subnet-other"},
+			"tags":                 ecsTags("locust", "web")}), "subnet-other"},
 		{"a task definition of another family", jsonReq(APIECS, "RegisterTaskDefinition", map[string]any{"family": "web", "tags": ecsTags("locust", "web")}), `"web"`},
 		{"someone else's log group", jsonReq(APILogs, "DeleteLogGroup", map[string]any{"logGroupName": "/ecs/locust"}), "/ecs/locust"},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			created := map[string]bool{}
 			if c.name == "a role and its policy" {
-				checkRequest(settings, ours(), created, queryReq(APIIAM, "CreateRole", iamTags("locust", "new", map[string]string{"RoleName": "locust-new"})))
+				checkRequest(settings, ours(), created, queryReq(APIIAM, "CreateRole", map[string]string{"RoleName": "locust-new", "Description": RoleMarker("locust", "new")}))
 			}
 			got := strings.Join(checkRequest(settings, ours(), created, c.a), "; ")
 			switch {

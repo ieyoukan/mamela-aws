@@ -5,6 +5,7 @@ import (
 	"encoding/json/v2"
 	"fmt"
 	"net/url"
+	"regexp"
 	"slices"
 	"strings"
 
@@ -16,6 +17,11 @@ import (
 // images and write logs) or by EC2 instances (to run the ECS agent), with one AWS-managed ECS
 // policy, and for EC2 an instance profile of the same name. Mamela's IAM catalog allows nothing
 // else, whatever this provider sends.
+//
+// Roles carry no tags: tagging takes iam:TagRole, which an operator's role may well lack (and
+// does not need for anything else). The role's description marks it instead
+// ("Mamela: mamela:boundary=locust mamela:name=web"); Mamela's record of what it created vouches
+// for it, as for everything.
 
 // KindIAMRole is the kind; OpPolicy attaches a missing policy or instance profile.
 const (
@@ -29,17 +35,15 @@ var (
 	policies = map[string]string{"ecs-task-execution": catalogs.PolicyECSTaskExecution, "ecs-for-ec2": catalogs.PolicyECSForEC2}
 )
 
-var iamTagParams = []string{"Tags.member.1.Key", "Tags.member.1.Value", "Tags.member.2.Key", "Tags.member.2.Value"}
-
 var (
 	listRoles         = queryCall(APIIAM, "ListRoles", "PathPrefix", "Marker")
 	getRole           = queryCall(APIIAM, "GetRole", "RoleName")
 	listAttached      = queryCall(APIIAM, "ListAttachedRolePolicies", "RoleName")
 	getProfile        = queryCall(APIIAM, "GetInstanceProfile", "InstanceProfileName")
-	createRole        = queryCall(APIIAM, "CreateRole", append([]string{"RoleName", "Path", "AssumeRolePolicyDocument", "Description"}, iamTagParams...)...)
+	createRole        = queryCall(APIIAM, "CreateRole", "RoleName", "Path", "AssumeRolePolicyDocument", "Description")
 	attachPolicy      = queryCall(APIIAM, "AttachRolePolicy", "RoleName", "PolicyArn")
 	detachPolicy      = queryCall(APIIAM, "DetachRolePolicy", "RoleName", "PolicyArn")
-	createProfile     = queryCall(APIIAM, "CreateInstanceProfile", append([]string{"InstanceProfileName", "Path"}, iamTagParams...)...)
+	createProfile     = queryCall(APIIAM, "CreateInstanceProfile", "InstanceProfileName", "Path")
 	addRoleToProfile  = queryCall(APIIAM, "AddRoleToInstanceProfile", "InstanceProfileName", "RoleName")
 	removeRoleProfile = queryCall(APIIAM, "RemoveRoleFromInstanceProfile", "InstanceProfileName", "RoleName")
 	deleteProfile     = queryCall(APIIAM, "DeleteInstanceProfile", "InstanceProfileName")
@@ -75,24 +79,20 @@ func (roleKind) operations() []protocol.Operation {
 	}
 }
 
-func iamTags(boundary, name string, params map[string]string) map[string]string {
-	params["Tags.member.1.Key"], params["Tags.member.1.Value"] = TagName, name
-	params["Tags.member.2.Key"], params["Tags.member.2.Value"] = TagBoundary, boundary
-	return params
+// RoleMarker is the description that marks a role this provider made.
+func RoleMarker(boundary, name string) string {
+	return "Mamela: " + TagBoundary + "=" + boundary + " " + TagName + "=" + name
 }
 
-type iamTag struct {
-	Key   string `xml:"Key"`
-	Value string `xml:"Value"`
-}
+var roleMarker = regexp.MustCompile(`^Mamela: mamela:boundary=(\S+) mamela:name=(\S+)$`)
 
-func iamTagOf(tags []iamTag, k string) string {
-	for _, t := range tags {
-		if t.Key == k {
-			return t.Value
-		}
+// markedBy reads a role's marker: its boundary and name.
+func markedBy(description string) (string, string, bool) {
+	m := roleMarker.FindStringSubmatch(description)
+	if m == nil {
+		return "", "", false
 	}
-	return ""
+	return m[1], m[2], true
 }
 
 // trustOf names a trust policy as IAM answers it (URL-encoded, maybe spaced differently).
@@ -144,9 +144,9 @@ func (roleKind) list(c *client) ([]object, error) {
 	var out []object
 	for _, name := range names {
 		var role struct {
-			Arn   string   `xml:"GetRoleResult>Role>Arn"`
-			Trust string   `xml:"GetRoleResult>Role>AssumeRolePolicyDocument"`
-			Tags  []iamTag `xml:"GetRoleResult>Role>Tags>member"`
+			Arn         string `xml:"GetRoleResult>Role>Arn"`
+			Trust       string `xml:"GetRoleResult>Role>AssumeRolePolicyDocument"`
+			Description string `xml:"GetRoleResult>Role>Description"`
 		}
 		if err := c.query(APIIAM, "GetRole", map[string]string{"RoleName": name}, &role); err != nil {
 			if notFound(err) {
@@ -154,7 +154,8 @@ func (roleKind) list(c *client) ([]object, error) {
 			}
 			return nil, err
 		}
-		if iamTagOf(role.Tags, TagName) == "" {
+		boundary, mname, ok := markedBy(role.Description)
+		if !ok {
 			continue
 		}
 		var attached struct {
@@ -175,7 +176,7 @@ func (roleKind) list(c *client) ([]object, error) {
 		case !notFound(err):
 			return nil, err
 		}
-		out = append(out, object{Name: iamTagOf(role.Tags, TagName), Boundary: iamTagOf(role.Tags, TagBoundary), IDs: ids, State: st})
+		out = append(out, object{Name: mname, Boundary: boundary, IDs: ids, State: st})
 	}
 	return out, nil
 }
@@ -204,14 +205,14 @@ func (roleKind) diff(r protocol.Resource, o protocol.Observed, _ map[string]prot
 	if err := checkName(name); err != nil {
 		return nil, err
 	}
-	createProfile := queryReq(APIIAM, "CreateInstanceProfile", iamTags(s.Boundary, r.Name, map[string]string{"InstanceProfileName": name, "Path": catalogs.IAMPath}))
+	createProfile := queryReq(APIIAM, "CreateInstanceProfile", map[string]string{"InstanceProfileName": name, "Path": catalogs.IAMPath})
 	addRole := queryReq(APIIAM, "AddRoleToInstanceProfile", map[string]string{"InstanceProfileName": name, "RoleName": name})
 	if !o.Exists {
 		ch := protocol.Change{Resource: r.ID, Kind: KindIAMRole, Op: OpCreate, IDs: map[string]string{"mamela-name": r.Name, "RoleName": name},
 			Reasons: []string{fmt.Sprintf("role %s%s, assumed by %s, with %s", catalogs.IAMPath, name, s.Trust, s.Policy)},
 			Requests: []protocol.Approved{
-				queryReq(APIIAM, "CreateRole", iamTags(s.Boundary, r.Name, map[string]string{"RoleName": name, "Path": catalogs.IAMPath,
-					"AssumeRolePolicyDocument": trust, "Description": "Mamela " + s.Boundary + " " + r.Name})),
+				queryReq(APIIAM, "CreateRole", map[string]string{"RoleName": name, "Path": catalogs.IAMPath,
+					"AssumeRolePolicyDocument": trust, "Description": RoleMarker(s.Boundary, r.Name)}),
 				queryReq(APIIAM, "AttachRolePolicy", map[string]string{"RoleName": name, "PolicyArn": policy}),
 			}}
 		if s.InstanceProfile {

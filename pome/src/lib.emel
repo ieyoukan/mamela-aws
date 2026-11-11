@@ -61,16 +61,24 @@ pub type Role(name: String, trust: Trust)
 ## An ECS cluster: Fargate and Fargate Spot, and the container instances that join it.
 pub type Cluster(name: String)
 
-## A container instance: an EC2 instance of the ECS-optimized Amazon Linux 2023 that joins the
-## cluster, with a public IP address (to reach ECS without a NAT gateway). Its role trusts
-## `Ec2Instances`. The guard allows only the instance types of [provider.aws.guard].
+## What an instance does, set up by the provider when it first boots: join a cluster as a
+## container instance, as a role that trusts `Ec2Instances` (the operator's AWS role must be able to
+## create instance profiles and pass the role to EC2); or run one container image with Docker,
+## publishing `port`, with no IAM role.
+pub enum Does {
+  JoinsCluster(cluster: Cluster, role: Role)
+  RunsContainer(image: String, port: Int)
+}
+
+## An EC2 instance of the ECS-optimized Amazon Linux 2023, with a public IP address (to reach ECS
+## and pull images without a NAT gateway). The guard allows only the instance types of
+## [provider.aws.guard].
 pub type Instance(
   name: String,
-  cluster: Cluster,
   subnet: Subnet,
   group: SecurityGroup,
-  role: Role,
   instance_type: String,
+  does: Does,
 )
 
 ## An environment variable of a container: a value, or the private IP address of an instance
@@ -176,7 +184,7 @@ fn cluster_ref(c: Cluster) -> Ref {
 }
 
 fn instance_ref(i: Instance) -> Ref {
-  Ref(kind: "AwsEcsInstance", name: i.name)
+  Ref(kind: "AwsInstance", name: i.name)
 }
 
 ## Declares the VPC.
@@ -263,17 +271,32 @@ pub fn cluster(graph: Mamela.Graph, b: Boundary, c: Cluster) -> Mamela.Graph {
   add(graph, b, "AwsEcsCluster", c.name, [], [])
 }
 
-## Declares the container instance.
+## Declares the instance.
 pub fn instance(graph: Mamela.Graph, b: Boundary, i: Instance) -> Mamela.Graph {
-  spec = [
-    ("cluster", Text(i.cluster.name)),
+  base = [
     ("subnet", Text(i.subnet.name)),
     ("securityGroup", Text(i.group.name)),
-    ("role", Text(i.role.name)),
     ("instanceType", Text(i.instance_type)),
   ]
-  after = [cluster_ref(i.cluster), subnet_ref(i.subnet), group_ref(i.group), role_ref(i.role)]
-  add(graph, b, "AwsEcsInstance", i.name, spec, after)
+  (does, needs) = i.does match {
+    JoinsCluster(cluster, role) -> {
+      (
+        [("cluster", Text(cluster.name)), ("role", Text(role.name))],
+        [cluster_ref(cluster), role_ref(role)],
+      )
+    }
+    RunsContainer(image, port) -> {
+      ([("container", Dynamic.object([("image", Text(image)), ("port", int(port))]))], [])
+    }
+  }
+  add(
+    graph,
+    b,
+    "AwsInstance",
+    i.name,
+    List.append(base, does),
+    List.append([subnet_ref(i.subnet), group_ref(i.group)], needs),
+  )
 }
 
 fn env_json(e: Env) -> Dynamic {

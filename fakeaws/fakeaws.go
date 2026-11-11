@@ -76,7 +76,7 @@ type instance struct {
 }
 
 type role struct {
-	name, trust string
+	name, trust, description string
 	policies    []string
 	tags        tags
 }
@@ -1018,6 +1018,11 @@ func iamTagsOf(p map[string]string) (tags, []iamTag) {
 }
 
 func (a *API) iam(act string, p map[string]string) (any, error) {
+	// As for an operator's role without iam:TagRole and iam:TagInstanceProfile (not uncommon):
+	// a create with tags is refused.
+	if _, tagged := p["Tags.member.1.Key"]; tagged {
+		return nil, fail(403, "AccessDenied", "not authorized to perform: iam:Tag%s", strings.TrimPrefix(act, "Create"))
+	}
 	noRole := func(n string) error { return fail(404, "NoSuchEntity", "the role with name %s cannot be found", n) }
 	noProfile := func(n string) error { return fail(404, "NoSuchEntity", "instance profile %s cannot be found", n) }
 	type result struct {
@@ -1058,11 +1063,12 @@ func (a *API) iam(act string, p map[string]string) (any, error) {
 			ts = append(ts, iamTag{k, r.tags[k]})
 		}
 		return struct {
-			XMLName xml.Name `xml:"GetRoleResponse"`
-			Arn     string   `xml:"GetRoleResult>Role>Arn"`
-			Trust   string   `xml:"GetRoleResult>Role>AssumeRolePolicyDocument"`
-			Tags    []iamTag `xml:"GetRoleResult>Role>Tags>member"`
-		}{Arn: RoleArn(r.name), Trust: url.QueryEscape(r.trust), Tags: ts}, nil
+			XMLName     xml.Name `xml:"GetRoleResponse"`
+			Arn         string   `xml:"GetRoleResult>Role>Arn"`
+			Trust       string   `xml:"GetRoleResult>Role>AssumeRolePolicyDocument"`
+			Description string   `xml:"GetRoleResult>Role>Description,omitempty"`
+			Tags        []iamTag `xml:"GetRoleResult>Role>Tags>member"`
+		}{Arn: RoleArn(r.name), Trust: url.QueryEscape(r.trust), Description: r.description, Tags: ts}, nil
 	case "CreateRole":
 		if a.findRole(p["RoleName"]) != nil {
 			return nil, fail(409, "EntityAlreadyExists", "role with name %s already exists", p["RoleName"])
@@ -1075,7 +1081,7 @@ func (a *API) iam(act string, p map[string]string) (any, error) {
 			return nil, fail(400, "MalformedPolicyDocument", "the trust policy is not JSON")
 		}
 		t, _ := iamTagsOf(p)
-		a.roles = append(a.roles, &role{name: p["RoleName"], trust: p["AssumeRolePolicyDocument"], tags: t})
+		a.roles = append(a.roles, &role{name: p["RoleName"], trust: p["AssumeRolePolicyDocument"], description: p["Description"], tags: t})
 		return done, nil
 	case "ListAttachedRolePolicies":
 		r := a.findRole(p["RoleName"])

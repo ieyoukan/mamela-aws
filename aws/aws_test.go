@@ -34,28 +34,41 @@ func network() []protocol.Resource {
 	}
 }
 
-// locust is the load test of churaverse_infra's terraform/locust, on a target of its own: nginx
-// as an ECS service on one EC2 container instance, and locust on Fargate Spot, run by run-task.
+// locust is the load test of churaverse_infra's terraform/locust, on a target of its own: nginx on
+// one EC2 instance (no IAM role), and locust on Fargate Spot, run by run-task.
 func locust() []protocol.Resource {
 	return append(network(),
 		res(aws.KindLogGroup, "locust", `,"retentionDays":7`),
 		res(aws.KindIAMRole, "task-execution", `,"trust":"ecs-tasks","policy":"ecs-task-execution"`),
-		res(aws.KindIAMRole, "instance", `,"trust":"ec2","policy":"ecs-for-ec2","instanceProfile":true`),
 		res(aws.KindCluster, "main", ``),
-		res(aws.KindInstance, "target", `,"cluster":"main","subnet":"public","securityGroup":"target","role":"instance","instanceType":"t4g.micro"`,
-			"AwsEcsCluster main", "AwsSubnet public", "AwsSecurityGroup target", "AwsIamRole instance"),
-		res(aws.KindTaskDefinition, "nginx", `,"launch":"EC2","cpu":128,"memoryMiB":128,"executionRole":"task-execution","logGroup":"locust",`+
-			`"containers":[{"name":"nginx","image":"public.ecr.aws/nginx/nginx:stable","ports":[{"container":80,"host":80}]}]`,
-			"AwsIamRole task-execution", "AwsLogGroup locust"),
-		res(aws.KindService, "target", `,"cluster":"main","taskDefinition":"nginx","count":1,"launch":"EC2"`,
-			"AwsEcsCluster main", "AwsEcsTaskDefinition nginx"),
+		res(aws.KindInstance, "target", `,"subnet":"public","securityGroup":"target","instanceType":"t4g.micro",`+
+			`"container":{"image":"public.ecr.aws/nginx/nginx:stable","port":80}`,
+			"AwsSubnet public", "AwsSecurityGroup target"),
 		res(aws.KindTaskDefinition, "locust", `,"launch":"FARGATE","cpu":256,"memoryMiB":512,"executionRole":"task-execution","logGroup":"locust",`+
 			`"containers":[{"name":"locust","image":"locustio/locust:2.32.0","command":["-f","/mnt/locustfile.py","--headless","-u","5","-r","1","-t","1m"],`+
 			`"environment":[{"name":"LOCUST_HOST","instanceIp":"target","prefix":"http://"}]}]`,
-			"AwsIamRole task-execution", "AwsLogGroup locust", "AwsEcsInstance target"),
+			"AwsIamRole task-execution", "AwsLogGroup locust", "AwsInstance target"),
 		res(aws.KindService, "locust", `,"cluster":"main","taskDefinition":"locust","count":0,"launch":"FARGATE_SPOT","subnet":"public",`+
 			`"securityGroup":"locust","publicIp":true`,
 			"AwsEcsCluster main", "AwsEcsTaskDefinition locust", "AwsSubnet public", "AwsSecurityGroup locust"),
+	)
+}
+
+// ecsOnEC2 is nginx as an ECS service on a container instance: the role's instance profile lets
+// the instance join the cluster.
+func ecsOnEC2() []protocol.Resource {
+	return append(network(),
+		res(aws.KindLogGroup, "web", `,"retentionDays":1`),
+		res(aws.KindIAMRole, "task-execution", `,"trust":"ecs-tasks","policy":"ecs-task-execution"`),
+		res(aws.KindIAMRole, "instance", `,"trust":"ec2","policy":"ecs-for-ec2","instanceProfile":true`),
+		res(aws.KindCluster, "main", ``),
+		res(aws.KindInstance, "host", `,"cluster":"main","subnet":"public","securityGroup":"target","role":"instance","instanceType":"t4g.micro"`,
+			"AwsEcsCluster main", "AwsSubnet public", "AwsSecurityGroup target", "AwsIamRole instance"),
+		res(aws.KindTaskDefinition, "nginx", `,"launch":"EC2","cpu":128,"memoryMiB":128,"executionRole":"task-execution","logGroup":"web",`+
+			`"containers":[{"name":"nginx","image":"public.ecr.aws/nginx/nginx:stable","ports":[{"container":80,"host":80}]}]`,
+			"AwsIamRole task-execution", "AwsLogGroup web"),
+		res(aws.KindService, "web", `,"cluster":"main","taskDefinition":"nginx","count":1,"launch":"EC2"`,
+			"AwsEcsCluster main", "AwsEcsTaskDefinition nginx"),
 	)
 }
 
@@ -63,13 +76,10 @@ func locust() []protocol.Resource {
 var teardown = []providertest.Explicit{
 	{Op: aws.OpRunTask, Resource: "AwsEcsService locust"},
 	{Op: aws.OpDelete, Resource: "AwsEcsService locust"},
-	{Op: aws.OpDelete, Resource: "AwsEcsService target"},
-	{Op: aws.OpDelete, Resource: "AwsEcsInstance target"},
+	{Op: aws.OpDelete, Resource: "AwsInstance target"},
 	{Op: aws.OpDelete, Resource: "AwsEcsCluster main"},
 	{Op: aws.OpDelete, Resource: "AwsEcsTaskDefinition locust"},
-	{Op: aws.OpDelete, Resource: "AwsEcsTaskDefinition nginx"},
 	{Op: aws.OpDelete, Resource: "AwsLogGroup locust"},
-	{Op: aws.OpDelete, Resource: "AwsIamRole instance"},
 	{Op: aws.OpDelete, Resource: "AwsIamRole task-execution"},
 	{Op: aws.OpDelete, Resource: "AwsSecurityGroup target"},
 	{Op: aws.OpDelete, Resource: "AwsSecurityGroup locust"},
@@ -100,6 +110,12 @@ func TestConformance(t *testing.T) {
 		GuardSettings: guardSettings,
 		Cases: []providertest.Case{
 			{Name: "locust", Desired: locust()},
+			{Name: "ecs-on-ec2", Desired: ecsOnEC2(), Explicit: []providertest.Explicit{
+				{Op: aws.OpDelete, Resource: "AwsEcsService web"},
+				{Op: aws.OpDelete, Resource: "AwsInstance host"},
+				{Op: aws.OpDelete, Resource: "AwsEcsCluster main"},
+				{Op: aws.OpDelete, Resource: "AwsIamRole instance"},
+			}},
 			// The teardown, on an account with someone else's instance, cluster and VPC: none of
 			// them is touched, and nothing of Mamela's is left.
 			{Name: "teardown", Desired: locust(), Explicit: teardown, World: func(api http.Handler) {
