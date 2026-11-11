@@ -107,6 +107,25 @@ CloudWatch Logs /mamela/locust/locust（7 日）、IAM /mamela/locust-task-execu
    10. `AwsInternetGateway igw`
    11. `AwsVpc net`
 
+## 実機での検証（2026-11-11）
+
+`examples/locust` を、MFA で assume-role した運用者のロールで、ap-northeast-1 に作り、試験し、消しました。
+
+- **作成:** plan と apply を 6 周しました。依存の深さの分だけ周が要ります。待つリソースは MAM-PLAN-0113 と表示されます。
+- **負荷試験:** `run-task` で 1 回、Fargate Spot で動かしました。結果は 196 リクエスト、失敗 0、中央値 2 ms で、locust の終了コードは 0 でした。
+- **片付け:** 明示操作の `delete` で、15 のリソースをすべて消しました。
+- **guard:** 毎回の前後で block はありませんでした。境界の外の EC2 インスタンスとリージョンの VPC の数は、前後で同じでした。
+- **費用:** t4g.micro が約 10 分、Fargate Spot の 0.25 vCPU が約 2 分。合わせて 0.01 USD 未満です。
+
+実機で見つけ、直したことがあります。
+
+- **IAM のタグ:** 運用者のロールに `iam:TagRole` がなく、タグ付きの CreateRole が拒まれました。ロールにはタグを付けず、説明に目印を書くようにしました。
+- **ECS on EC2:** 運用者のロールでは、インスタンスプロファイルを作れず、EC2 に PassRole できるロールも限られていました。そのため、ターゲットを「IAM ロールのない EC2 の上のコンテナー」にしました。ECS on EC2 は、偽の AWS の適合試験で確かめています。
+- **Mamela 本体:** 次の 2 つを直しました。
+  - メンバーのない JSON の呼び出しで、本文 `{}` を送る。
+  - 観測の ID で、先頭の `/` を許す。CloudWatch Logs のロググループ名のため。
+- **RunInstances の分類:** RunInstances の宣言に固定の `MinCount`・`MaxCount` がなく、承認が「カタログが知らない呼び出し」（MAM-POL-0208）になっていました。宣言に書き足し、すべての呼び出しが分類されることを試験するようにしました。
+
 ## 開発
 
 ```bash
