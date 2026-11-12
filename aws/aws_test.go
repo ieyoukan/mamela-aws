@@ -154,7 +154,7 @@ func (e *endingTasks) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 }
 
 func TestManifest(t *testing.T) {
-	m := aws.Provider{}.Manifest()
+	m := aws.Provider.Manifest()
 	if err := m.Check(); err != nil {
 		t.Fatal(err)
 	}
@@ -164,7 +164,7 @@ func TestManifest(t *testing.T) {
 			t.Errorf("%s has no explicit delete", k.Kind)
 		}
 		for _, o := range k.Operations {
-			if o.Op == aws.OpDelete || o.Op == aws.OpRunTask {
+			if o.Op == aws.OpDelete || o.Op == aws.OpRunTask || o.Op == aws.OpAdopt && o.Adopts {
 				continue
 			}
 			if o.Explicit {
@@ -181,7 +181,7 @@ func TestManifest(t *testing.T) {
 // always needs a person's approval (MAM-POL-0208), even when the request is an ordinary one.
 func TestEveryCallIsClassified(t *testing.T) {
 	cats := shipped(t)
-	m := aws.Provider{}.Manifest()
+	m := aws.Provider.Manifest()
 	all := append(slices.Clone(m.ObserveCalls), m.Guard.Calls...)
 	for _, k := range m.Kinds {
 		for _, o := range k.Operations {

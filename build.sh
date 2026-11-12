@@ -35,4 +35,8 @@ iam = "catalogs/iam.json"
 logs = "catalogs/logs.json"
 ssm = "catalogs/ssm.json"
 TOML
+# The typed declarations of the kinds with a spec (src/kinds.emel, module Aws.Kinds), generated from
+# the program's manifest: what `mamela import terraform` writes declarations with. src/lib.emel is
+# written by hand.
+GOWORK=off go tool mamela provider pome --out src/kinds.emel pome >/dev/null
 echo "$out $sum (version $version)"

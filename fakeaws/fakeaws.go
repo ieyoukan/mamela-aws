@@ -502,6 +502,53 @@ func (a *API) ec2(act string, p map[string]string) (any, error) {
 		return nil, err
 	}
 	switch act {
+	case "CreateTags":
+		id := p["ResourceId.1"]
+		var t *tags
+		for _, v := range a.vpcs {
+			if v.id == id {
+				t = &v.tags
+			}
+		}
+		for _, g := range a.gateways {
+			if g.id == id {
+				t = &g.tags
+			}
+		}
+		for _, x := range a.subnets {
+			if x.id == id {
+				t = &x.tags
+			}
+		}
+		for _, x := range a.routes {
+			if x.id == id {
+				t = &x.tags
+			}
+		}
+		for _, x := range a.groups {
+			if x.id == id {
+				t = &x.tags
+			}
+		}
+		for _, x := range a.insts {
+			if x.id == id {
+				t = &x.tags
+			}
+		}
+		if t == nil {
+			return nil, fail(400, "InvalidID", "the ID '%s' is not valid", id)
+		}
+		if *t == nil {
+			*t = tags{}
+		}
+		for i := 1; ; i++ {
+			k, ok := p[fmt.Sprintf("Tag.%d.Key", i)]
+			if !ok {
+				break
+			}
+			(*t)[k] = p[fmt.Sprintf("Tag.%d.Value", i)]
+		}
+		return ok("CreateTags"), nil
 	case "DescribeVpcs":
 		type item struct {
 			ID   string   `xml:"vpcId"`
@@ -510,7 +557,7 @@ func (a *API) ec2(act string, p map[string]string) (any, error) {
 		}
 		var items []item
 		for _, v := range a.vpcs {
-			if matches(fs, v.tags, nil) {
+			if matches(fs, v.tags, map[string]string{"vpc-id": v.id}) {
 				items = append(items, item{v.id, v.cidr, xmlTags(v.tags)})
 			}
 		}
@@ -573,7 +620,7 @@ func (a *API) ec2(act string, p map[string]string) (any, error) {
 		}
 		var items []item
 		for _, g := range a.gateways {
-			if matches(fs, g.tags, nil) {
+			if matches(fs, g.tags, map[string]string{"internet-gateway-id": g.id}) {
 				it := item{ID: g.id, Tags: xmlTags(g.tags)}
 				if g.vpc != "" {
 					it.Attachments = []attachment{{g.vpc, "available"}}
@@ -631,7 +678,7 @@ func (a *API) ec2(act string, p map[string]string) (any, error) {
 		}
 		var items []item
 		for _, s := range a.subnets {
-			if matches(fs, s.tags, nil) {
+			if matches(fs, s.tags, map[string]string{"subnet-id": s.id}) {
 				items = append(items, item{s.id, s.vpc, s.cidr, s.zone, xmlTags(s.tags)})
 			}
 		}
@@ -687,7 +734,7 @@ func (a *API) ec2(act string, p map[string]string) (any, error) {
 		}
 		var items []item
 		for _, x := range a.routes {
-			if !matches(fs, x.tags, nil) {
+			if !matches(fs, x.tags, map[string]string{"route-table-id": x.id}) {
 				continue
 			}
 			v := a.findVpc(x.vpc)
@@ -782,7 +829,7 @@ func (a *API) ec2(act string, p map[string]string) (any, error) {
 		}
 		var items []item
 		for _, g := range a.groups {
-			if !matches(fs, g.tags, nil) {
+			if !matches(fs, g.tags, map[string]string{"group-id": g.id}) {
 				continue
 			}
 			it := item{ID: g.id, Name: g.name, VpcID: g.vpc, Tags: xmlTags(g.tags)}

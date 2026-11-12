@@ -68,18 +68,13 @@ func createChange(r protocol.Resource, k protocol.ResourceKind, why string, a pr
 		Requests: []protocol.Approved{a}}
 }
 
-// findTagged lists, with a Describe call, what this provider tagged.
-func findTagged[T any](c *client, action string, out *T) error {
-	return c.query(APIEC2, action, tagged(), out)
-}
-
 // --- VPC --------------------------------------------------------------------------------------
 
 type vpcKind struct{}
 
 type vpcSpec struct {
-	Boundary string `json:"boundary"`
-	CIDR     string `json:"cidr"`
+	Boundary string `json:"boundary" doc:"the boundary (the guard's): it tags everything made"`
+	CIDR     string `json:"cidr" doc:"its IPv4 CIDR block"`
 }
 
 type vpcState struct {
@@ -89,10 +84,13 @@ type vpcState struct {
 func (vpcKind) kind() protocol.ResourceKind { return KindVpc }
 func (vpcKind) reads() []protocol.Call      { return []protocol.Call{describeVpcs} }
 func (vpcKind) operations() []protocol.Operation {
-	return []protocol.Operation{op(OpCreate, createVpc), unsupportedOp(OpReplace, "a VPC keeps its CIDR block: declare a new one"), deleteOp(deleteVpc)}
+	return []protocol.Operation{op(OpCreate, createVpc), unsupportedOp(OpReplace, "a VPC keeps its CIDR block: declare a new one"), deleteOp(deleteVpc), adoptOp()}
 }
 
-func (vpcKind) list(c *client) ([]object, error) {
+func (k vpcKind) list(c *client) ([]object, error) { return k.listBy(c, tagged()) }
+
+// listBy lists with Describe parameters (a filter by ID finds an object that carries no tag).
+func (vpcKind) listBy(c *client, params map[string]string) ([]object, error) {
 	var resp struct {
 		Items []struct {
 			ID   string   `xml:"vpcId"`
@@ -100,7 +98,7 @@ func (vpcKind) list(c *client) ([]object, error) {
 			Tags []xmlTag `xml:"tagSet>item"`
 		} `xml:"vpcSet>item"`
 	}
-	if err := findTagged(c, "DescribeVpcs", &resp); err != nil {
+	if err := c.query(APIEC2, "DescribeVpcs", params, &resp); err != nil {
 		return nil, err
 	}
 	var out []object
@@ -164,8 +162,8 @@ func nameOf(ch protocol.Change) string {
 type gatewayKind struct{}
 
 type gatewaySpec struct {
-	Boundary string `json:"boundary"`
-	Vpc      string `json:"vpc"`
+	Boundary string `json:"boundary" doc:"the boundary (the guard's)"`
+	Vpc      string `json:"vpc" mamela:"ref=AwsVpc" doc:"the VPC it is attached to"`
 }
 
 type gatewayState struct {
@@ -176,10 +174,13 @@ func (gatewayKind) kind() protocol.ResourceKind { return KindInternetGateway }
 func (gatewayKind) reads() []protocol.Call      { return []protocol.Call{describeGateways} }
 func (gatewayKind) operations() []protocol.Operation {
 	return []protocol.Operation{op(OpCreate, createGateway), op(OpAttach, attachGateway),
-		unsupportedOp(OpReplace, "the gateway is attached to another VPC: detach it by hand"), deleteOp(detachGateway, deleteGateway)}
+		unsupportedOp(OpReplace, "the gateway is attached to another VPC: detach it by hand"), deleteOp(detachGateway, deleteGateway), adoptOp()}
 }
 
-func (gatewayKind) list(c *client) ([]object, error) {
+func (k gatewayKind) list(c *client) ([]object, error) { return k.listBy(c, tagged()) }
+
+// listBy lists with Describe parameters (a filter by ID finds an object that carries no tag).
+func (gatewayKind) listBy(c *client, params map[string]string) ([]object, error) {
 	var resp struct {
 		Items []struct {
 			ID          string `xml:"internetGatewayId"`
@@ -189,7 +190,7 @@ func (gatewayKind) list(c *client) ([]object, error) {
 			Tags []xmlTag `xml:"tagSet>item"`
 		} `xml:"internetGatewaySet>item"`
 	}
-	if err := findTagged(c, "DescribeInternetGateways", &resp); err != nil {
+	if err := c.query(APIEC2, "DescribeInternetGateways", params, &resp); err != nil {
 		return nil, err
 	}
 	var out []object
@@ -275,10 +276,10 @@ func (k gatewayKind) done(c *client, ch protocol.Change, a protocol.Approved) (b
 type subnetKind struct{}
 
 type subnetSpec struct {
-	Boundary string `json:"boundary"`
-	Vpc      string `json:"vpc"`
+	Boundary string `json:"boundary" doc:"the boundary (the guard's)"`
+	Vpc      string `json:"vpc" mamela:"ref=AwsVpc"`
 	CIDR     string `json:"cidr"`
-	Zone     string `json:"zone"`
+	Zone     string `json:"zone" doc:"its availability zone (ap-northeast-1a)"`
 }
 
 type subnetState struct {
@@ -290,10 +291,13 @@ type subnetState struct {
 func (subnetKind) kind() protocol.ResourceKind { return KindSubnet }
 func (subnetKind) reads() []protocol.Call      { return []protocol.Call{describeSubnets} }
 func (subnetKind) operations() []protocol.Operation {
-	return []protocol.Operation{op(OpCreate, createSubnet), unsupportedOp(OpReplace, "a subnet keeps its VPC, CIDR block and zone: declare a new one"), deleteOp(deleteSubnet)}
+	return []protocol.Operation{op(OpCreate, createSubnet), unsupportedOp(OpReplace, "a subnet keeps its VPC, CIDR block and zone: declare a new one"), deleteOp(deleteSubnet), adoptOp()}
 }
 
-func (subnetKind) list(c *client) ([]object, error) {
+func (k subnetKind) list(c *client) ([]object, error) { return k.listBy(c, tagged()) }
+
+// listBy lists with Describe parameters (a filter by ID finds an object that carries no tag).
+func (subnetKind) listBy(c *client, params map[string]string) ([]object, error) {
 	var resp struct {
 		Items []struct {
 			ID    string   `xml:"subnetId"`
@@ -303,7 +307,7 @@ func (subnetKind) list(c *client) ([]object, error) {
 			Tags  []xmlTag `xml:"tagSet>item"`
 		} `xml:"subnetSet>item"`
 	}
-	if err := findTagged(c, "DescribeSubnets", &resp); err != nil {
+	if err := c.query(APIEC2, "DescribeSubnets", params, &resp); err != nil {
 		return nil, err
 	}
 	var out []object
@@ -363,10 +367,10 @@ func (k subnetKind) done(c *client, ch protocol.Change, a protocol.Approved) (bo
 type routeTableKind struct{}
 
 type routeTableSpec struct {
-	Boundary        string `json:"boundary"`
-	Vpc             string `json:"vpc"`
-	InternetGateway string `json:"internetGateway"`
-	Subnet          string `json:"subnet"`
+	Boundary        string `json:"boundary" doc:"the boundary (the guard's)"`
+	Vpc             string `json:"vpc" mamela:"ref=AwsVpc"`
+	InternetGateway string `json:"internetGateway" mamela:"ref=AwsInternetGateway" doc:"where 0.0.0.0/0 goes"`
+	Subnet          string `json:"subnet" mamela:"ref=AwsSubnet" doc:"the subnet it serves"`
 }
 
 type routeTableState struct {
@@ -379,10 +383,13 @@ func (routeTableKind) reads() []protocol.Call      { return []protocol.Call{desc
 func (routeTableKind) operations() []protocol.Operation {
 	return []protocol.Operation{op(OpCreate, createRouteTable), op(OpRoute, createRoute, associateRoutes),
 		unsupportedOp(OpReplace, "the route table routes elsewhere, or serves another subnet: change it by hand"),
-		deleteOp(disassociate, deleteRouteTable)}
+		deleteOp(disassociate, deleteRouteTable), adoptOp()}
 }
 
-func (routeTableKind) list(c *client) ([]object, error) {
+func (k routeTableKind) list(c *client) ([]object, error) { return k.listBy(c, tagged()) }
+
+// listBy lists with Describe parameters (a filter by ID finds an object that carries no tag).
+func (routeTableKind) listBy(c *client, params map[string]string) ([]object, error) {
 	var resp struct {
 		Items []struct {
 			ID     string `xml:"routeTableId"`
@@ -397,7 +404,7 @@ func (routeTableKind) list(c *client) ([]object, error) {
 			Tags []xmlTag `xml:"tagSet>item"`
 		} `xml:"routeTableSet>item"`
 	}
-	if err := findTagged(c, "DescribeRouteTables", &resp); err != nil {
+	if err := c.query(APIEC2, "DescribeRouteTables", params, &resp); err != nil {
 		return nil, err
 	}
 	var out []object
@@ -512,16 +519,16 @@ type groupKind struct{}
 
 // Ingress is one rule: TCP to Port, from the security group FromGroup (by name) or from CIDR.
 type Ingress struct {
-	Port      int64  `json:"port"`
-	FromGroup string `json:"fromGroup,omitempty"`
-	CIDR      string `json:"cidr,omitempty"`
+	Port      int64  `json:"port" doc:"the TCP port"`
+	FromGroup string `json:"fromGroup,omitempty" mamela:"ref=AwsSecurityGroup" doc:"from the members of this group"`
+	CIDR      string `json:"cidr,omitempty" doc:"or from this CIDR block"`
 }
 
 type groupSpec struct {
-	Boundary    string    `json:"boundary"`
-	Vpc         string    `json:"vpc"`
+	Boundary    string    `json:"boundary" doc:"the boundary (the guard's)"`
+	Vpc         string    `json:"vpc" mamela:"ref=AwsVpc"`
 	Description string    `json:"description"`
-	Ingress     []Ingress `json:"ingress,omitempty"`
+	Ingress     []Ingress `json:"ingress,omitempty" doc:"its ingress rules (Mamela adds rules, and never removes one)"`
 }
 
 // rule is an ingress rule as observed: "tcp/80 from sg-1" or "tcp/80 from 10.0.0.0/16".
@@ -536,10 +543,13 @@ func (groupKind) kind() protocol.ResourceKind { return KindSecurityGroup }
 func (groupKind) reads() []protocol.Call      { return []protocol.Call{describeGroups} }
 func (groupKind) operations() []protocol.Operation {
 	return []protocol.Operation{op(OpCreate, createGroup), op(OpIngress, authorizeIngress),
-		unsupportedOp(OpReplace, "a security group keeps its VPC, and Mamela never removes a rule: remove it by hand"), deleteOp(deleteGroup)}
+		unsupportedOp(OpReplace, "a security group keeps its VPC, and Mamela never removes a rule: remove it by hand"), deleteOp(deleteGroup), adoptOp()}
 }
 
-func (groupKind) list(c *client) ([]object, error) {
+func (k groupKind) list(c *client) ([]object, error) { return k.listBy(c, tagged()) }
+
+// listBy lists with Describe parameters (a filter by ID finds an object that carries no tag).
+func (groupKind) listBy(c *client, params map[string]string) ([]object, error) {
 	var resp struct {
 		Items []struct {
 			ID    string `xml:"groupId"`
@@ -557,7 +567,7 @@ func (groupKind) list(c *client) ([]object, error) {
 			Tags []xmlTag `xml:"tagSet>item"`
 		} `xml:"securityGroupInfo>item"`
 	}
-	if err := findTagged(c, "DescribeSecurityGroups", &resp); err != nil {
+	if err := c.query(APIEC2, "DescribeSecurityGroups", params, &resp); err != nil {
 		return nil, err
 	}
 	var out []object

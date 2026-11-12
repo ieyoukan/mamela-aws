@@ -18,13 +18,14 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version: "1.27.3"
-      - name: Mamela's pinned toolchain (wasmtime)
+      - name: Mamela's pinned toolchain (emela, wasmtime) and the Pomes' dependencies
         working-directory: mamela
-        run: go run ./cmd/mamela toolchain install --dir "$PWD/.tools/bin" --downloads "$PWD/.tools/downloads"
+        run: scripts/install-toolchain.sh
       - name: Test
         working-directory: mamela-aws
         env:
           GOTOOLCHAIN: local
           GOWORK: "off"
           MAMELA_TOOLCHAIN_DIR: ${{ github.workspace }}/mamela/.tools/bin
+          EMELA_POME_CACHE: ${{ github.workspace }}/mamela/.tools/pomes
         run: go vet ./... && go test ./...
