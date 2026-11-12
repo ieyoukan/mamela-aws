@@ -12,7 +12,7 @@ jobs:
       - uses: actions/checkout@v4
         with:
           repository: ieyoukan/mamela
-          ref: feat/proxmox-out
+          ref: main
           path: mamela
       # The Go that builds pome/provider.wasm (build.sh): another release gives another program.
       - uses: actions/setup-go@v5
