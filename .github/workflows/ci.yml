@@ -27,4 +27,5 @@ jobs:
           GOTOOLCHAIN: local
           GOWORK: "off"
           MAMELA_TOOLCHAIN_DIR: ${{ github.workspace }}/mamela/.tools/bin
+          EMELA_POME_CACHE: ${{ github.workspace }}/mamela/.tools/pomes
         run: go vet ./... && go test ./...
