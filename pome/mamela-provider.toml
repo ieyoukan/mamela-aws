@@ -3,7 +3,7 @@
 provider = "aws"
 version = "0.1.0"
 program = "provider.wasm"
-sha256 = "03dc1a69b144a8d7fee24340df7e9b89fc1b6c6e6acbf311f96b0c15ef698ef8"
+sha256 = "b41b992c5220fa35cf90881722a51554d14f2deeb3ce42e3ca00f63243c2946e"
 
 # The catalogs of the APIs the provider calls (ADR 0008 of Mamela). Mamela classifies the program's
 # requests with one only when the operator names it (mamela.providers.toml: catalog = "pome:ec2").

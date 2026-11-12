@@ -1,7 +1,6 @@
 package aws
 
 import (
-	"context"
 	"encoding/json/v2"
 	"fmt"
 	"maps"
@@ -11,14 +10,14 @@ import (
 	"strings"
 
 	"github.com/ieyoukan/mamela/provider/protocol"
-	"github.com/ieyoukan/mamela/provider/sdk"
 )
 
 // The guard (ADR 0006 of Mamela) holds every apply to the operator's boundary and budget, from
 // mamela.providers.toml [provider.aws.guard], and watches what is not Mamela's:
 //
 //   - every object a change names is of the boundary (tagged mamela:boundary, or named after it);
-//     every object a change creates is tagged with it and named after it;
+//     every object a change creates is tagged with it and named after it; an imported object is
+//     adopted into it (tagged with it);
 //   - instances only of the allowed types, at most max_instances of them; at most max_tasks tasks
 //     (services' counts and run-task's running tasks);
 //   - after the apply, the account's other EC2 instances and ECS clusters are as they were.
@@ -79,9 +78,8 @@ func readWorld(c *client, boundary string) (world, error) {
 	return w, nil
 }
 
-// Guard implements sdk.Guarder.
-func (Provider) Guard(ctx context.Context, h *sdk.Host, in protocol.GuardParams) (protocol.GuardResult, error) {
-	c := &client{ctx: ctx, h: h}
+// guard is the provider's guard.
+func guard(c *client, in protocol.GuardParams) (protocol.GuardResult, error) {
 	var out protocol.GuardResult
 	add := func(code, severity, format string, args ...any) {
 		out.Findings = append(out.Findings, protocol.Finding{Code: code, Severity: severity, Message: fmt.Sprintf(format, args...)})
@@ -260,6 +258,14 @@ func checkRequest(s GuardSettings, w world, created map[string]bool, a protocol.
 	// (A log group is named after it; a profile, after its role.)
 	if isCreate && act != "CreateLogGroup" && act != "CreateInstanceProfile" && boundaryTag(a) != b {
 		out = append(out, fmt.Sprintf("creates something tagged %s=%q", TagBoundary, boundaryTag(a)))
+	}
+	// Adopting tags an imported object (ADR 0009 of Mamela): it must take this boundary, and the
+	// name of a declaration.
+	if act == "CreateTags" {
+		if boundaryTag(a) != b || param(a, "Tag.1.Key") != TagName || param(a, "Tag.1.Value") == "" {
+			out = append(out, fmt.Sprintf("tags %s into boundary %q, not this one with a declaration's name", param(a, "ResourceId.1"), boundaryTag(a)))
+		}
+		return out
 	}
 	switch a.API {
 	case APIEC2, APIIAM:

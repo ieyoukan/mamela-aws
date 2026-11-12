@@ -7,4 +7,4 @@ import (
 	"github.com/ieyoukan/mamela/provider/sdk"
 )
 
-func main() { sdk.Serve(aws.Provider{}) }
+func main() { sdk.Serve(aws.Provider) }

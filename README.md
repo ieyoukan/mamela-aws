@@ -83,6 +83,37 @@ plan には入らず、人が名前を打ち直したときだけ行う操作で
 | `AWS-0201` | 後 | 境界の外の EC2 インスタンスの状態が変わっていないこと（変われば warn） |
 | `AWS-0202` | 後 | 境界の外の ECS クラスターが消えていないこと |
 
+## Terraform からの乗り換え（Mamela の ADR 0009）
+
+Terraform（OpenTofu）で作ったネットワークを、作り直さずに Mamela へ移せます。Mamela は Terraform を実行せず、取り込むだけでは AWS に何も送りません。
+
+| Terraform の型 | 宣言 | 取り込めないもの |
+|---|---|---|
+| `aws_vpc` | `AwsVpc` | |
+| `aws_internet_gateway` | `AwsInternetGateway` | VPC を取り込んでいない |
+| `aws_subnet` | `AwsSubnet` | VPC を取り込んでいない |
+| `aws_route_table`（`aws_route_table_association`・`aws_route` を含む） | `AwsRouteTable` | 0.0.0.0/0 をインターネットゲートウェイへ送る経路しかない、1 つのサブネットのためのもの以外 |
+| `aws_security_group`（`aws_security_group_rule`・`aws_vpc_security_group_ingress_rule` を含む） | `AwsSecurityGroup` | ― |
+
+- **セキュリティグループのルール:** Mamela が書けるもの（TCP の 1 つのポートへ、CIDR か取り込んだグループから）だけを宣言します。ほかのルール（egress、ポートの範囲、自分から）はそのまま残ります。Mamela はルールを消しません。
+- **境界:** 取り込んだものは、guard の境界（`[provider.aws.guard] boundary`）に入ります。
+- **まだ取り込めないもの:** ECS、IAM のロール、CloudWatch Logs、EC2 のインスタンスは、まだ取り込めません。名前の決まり（`/mamela/` の下など）があり、そのままでは引き継げないためです。理由を表示し、Terraform が管理し続けます。
+
+手順:
+
+```sh
+cd terraform-dir && terraform show -json > /tmp/state.json
+mamela import terraform --state /tmp/state.json --providers mamela.providers.toml <pome-dir>
+```
+
+1. `<pome-dir>/src/imported.emel` に宣言が書かれます。この Pome の生成モジュール `Aws.Kinds`（`pome/src/kinds.emel`）の型と関数を使います。
+2. 宣言で `import Imported` し、グラフに `|> Imported.imported` を足します。
+3. `mamela plan` では、それぞれが「引き継ぐ対象」と表示されます（MAM-PLAN-0114）。何も変わりません。
+4. 表示された `mamela act --confirm <name> adopt "<ID>" <pome-dir>` で、1 つずつ引き継ぎます。
+   - 引き継ぎは `CreateTags` で、`mamela:name` と `mamela:boundary` を付けるだけです。
+   - guard は、タグが guard の境界であることを確かめます。
+5. 表示された `terraform state rm ...` で、Terraform に忘れさせます。
+
 ## 例: locust の負荷試験（[examples/locust](examples/locust)）
 
 Fargate Spot の locust が、EC2 のインスタンス上の nginx に負荷をかけます。どちらも専用の VPC の中にあり、境界の外のものには触れません。
@@ -165,9 +196,12 @@ churaverse の以前の dev 環境と同じ形を作りました。ECS 最適化
 ## 開発
 
 ```bash
-./build.sh                  # pome/provider.wasm と pome/mamela-provider.toml を作る（Go 1.27.3）
-go test ./...               # 適合試験（Mamela の providertest）、guard、ビルドの再現性
+./build.sh                  # pome/provider.wasm、pome/mamela-provider.toml、pome/src/kinds.emel を作る（Go 1.27.3）
+go test ./...               # 適合試験（Mamela の providertest）、guard、取り込み、ビルドの再現性
 ```
+
+- **作り:** Mamela の provider kit（`provider/kit`）の上で動きます。種類ごとの知識（一覧、差分、効いているか、明示操作、取り込み）は `aws/` の各種類にあり、`aws/kit.go` が kit につなぎます。
+- **生成物:** `pome/src/kinds.emel` は、`go tool mamela provider pome --out src/kinds.emel pome` がマニフェストから生成します（手で直さない）。`pome/src/lib.emel` は手で書いています。
 
 - **適合試験の要件:** Mamela が固定した wasmtime が要ります（`MAMELA_TOOLCHAIN_DIR`、CI を参照）。
 - **偽の AWS:** 適合試験は、偽の AWS（[fakeaws](fakeaws)）の上で次を確かめます。
@@ -178,6 +212,8 @@ go test ./...               # 適合試験（Mamela の providertest）、guard�
   - ECS on EC2（クラスターに参加するインスタンス）
   - IAM のタグを付けないこと（偽の AWS は、タグ付きの作成を AccessDenied で拒む）
   - 他人のインスタンス、クラスター、VPC に触れないこと
+  - Terraform で作ったネットワークを取り込み、引き継ぐと差分がなくなること（応答の喪失・未送信も含む）
+  - `mamela import terraform` の通し（state の JSON から Emela を書き、宣言として評価できること）
 - **Pome の試験:** Emela の Pome は `pome/` にあり、`emela test` で確かめます。
 - **公開前の注意:** Mamela Pome 0.3.0 と、この Pome の公開までは、`[replace]` で隣の mamela のチェックアウトを使います。
 
