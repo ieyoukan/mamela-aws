@@ -44,30 +44,53 @@ func importState(t *testing.T, state []byte) []protocol.ImportObject {
 	return out
 }
 
-// after are the resources a declaration refers to, as the generated Pome adds them.
+// after are the resources a declaration refers to, as the generated Pome adds them: every
+// reference of its kind's spec (the manifest's), in lists and objects too.
 func after(kind protocol.ResourceKind, spec []byte) []string {
-	var s struct {
-		Vpc             string `json:"vpc"`
-		InternetGateway string `json:"internetGateway"`
-		Subnet          string `json:"subnet"`
-		Ingress         []struct {
-			FromGroup string `json:"fromGroup"`
-		} `json:"ingress"`
-	}
-	json.Unmarshal(spec, &s)
+	m := aws.Provider.Manifest()
+	k := m.Kinds[slices.IndexFunc(m.Kinds, func(x protocol.Kind) bool { return x.Kind == kind })]
+	var v any
+	json.Unmarshal(spec, &v)
 	var out []string
-	add := func(k, n string) {
-		if n != "" && !slices.Contains(out, k+" "+n) {
-			out = append(out, k+" "+n)
+	var walk func(fields []protocol.Field, v any)
+	var value func(f protocol.Field, v any)
+	value = func(f protocol.Field, v any) {
+		switch f.Type {
+		case protocol.FieldRef:
+			if n, _ := v.(string); n != "" && !slices.Contains(out, string(f.Ref)+" "+n) {
+				out = append(out, string(f.Ref)+" "+n)
+			}
+		case protocol.FieldList:
+			l, _ := v.([]any)
+			for _, x := range l {
+				value(*f.Elem, x)
+			}
+		case protocol.FieldObject:
+			walk(f.Fields, v)
 		}
 	}
-	add("AwsVpc", s.Vpc)
-	add("AwsInternetGateway", s.InternetGateway)
-	add("AwsSubnet", s.Subnet)
-	for _, in := range s.Ingress {
-		add("AwsSecurityGroup", in.FromGroup)
+	walk = func(fields []protocol.Field, v any) {
+		o, _ := v.(map[string]any)
+		for _, f := range fields {
+			if x, ok := o[f.Name]; ok {
+				value(f, x)
+			}
+		}
 	}
+	walk(k.Spec, v)
 	return out
+}
+
+// declare makes the declarations of what an import gives, and the adoptions Mamela records.
+func declare(res protocol.ImportResult) ([]protocol.Resource, []protocol.Adopting) {
+	var desired []protocol.Resource
+	var adopting []protocol.Adopting
+	for _, r := range res.Resources {
+		id := string(r.Kind) + " " + r.Name
+		desired = append(desired, protocol.Resource{ID: id, Kind: r.Kind, Name: r.Name, Spec: r.Spec, After: after(r.Kind, r.Spec)})
+		adopting = append(adopting, protocol.Adopting{Resource: id, IDs: r.IDs})
+	}
+	return desired, adopting
 }
 
 // A network Terraform made moves to Mamela: each resource is declared as it is (the rules Mamela
@@ -140,6 +163,106 @@ func TestImportFromTerraform(t *testing.T) {
 	})
 }
 
+// stackGuard are the guard's settings for the stack Terraform made: two instances.
+var stackGuard = []byte(`{"boundary":"locust","instance_types":["t4g.micro","t4g.small"],"max_instances":2,"max_tasks":3}`)
+
+// stackOrder is the order a person adopts the stack in: what is referred to first.
+var stackOrder = []string{"AwsVpc main", "AwsInternetGateway gw", "AwsSubnet public", "AwsSecurityGroup admin", "AwsSecurityGroup web",
+	"AwsRouteTable public", "AwsIamRole execution", "AwsIamRole instance", "AwsLogGroup app", "AwsEcsCluster main",
+	"AwsEcsTaskDefinition app", "AwsEcsService app", "AwsInstance bastion", "AwsInstance worker"}
+
+// An ECS stack Terraform made moves to Mamela: its network, the IAM roles under /mamela/ (with
+// their policy attachments and instance profile), the log group under /mamela/<boundary>/, the
+// cluster (with its capacity providers), the task definition of the family mamela-<boundary>-*
+// and its service, and two instances (one with the instance role) are declared as they are;
+// what Mamela cannot adopt safely is left to Terraform with why: a role under / with
+// AdministratorAccess (and its attachment), a log group under /ecs/, a task definition of another
+// family and the service that runs it.
+func TestImportStackFromTerraform(t *testing.T) {
+	st := fakeaws.New().AddTerraformStack("locust")
+	res, err := aws.Provider.Import(context.Background(), protocol.ImportParams{Objects: importState(t, st.State), Settings: stackGuard})
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := map[string]protocol.Imported{}
+	for _, r := range res.Resources {
+		got[r.Address] = r
+	}
+	for addr, want := range map[string]struct {
+		spec string
+		also []string
+	}{
+		"aws_iam_role.execution": {`{"boundary":"locust","policy":"ecs-task-execution","trust":"ecs-tasks"}`, []string{"aws_iam_role_policy_attachment.execution"}},
+		"aws_iam_role.instance": {`{"boundary":"locust","instanceProfile":true,"policy":"ecs-for-ec2","trust":"ec2"}`,
+			[]string{"aws_iam_instance_profile.instance", "aws_iam_role_policy_attachment.instance"}},
+		"aws_cloudwatch_log_group.app": {`{"boundary":"locust","retentionDays":14}`, nil},
+		"aws_ecs_cluster.main":         {`{"boundary":"locust"}`, []string{"aws_ecs_cluster_capacity_providers.main"}},
+		"aws_ecs_task_definition.app": {`{"boundary":"locust","containers":[{"containerName":"app","environment":[{"value":"web","variable":"MODE"}],` +
+			`"image":"public.ecr.aws/nginx/nginx:stable","ports":[{"container":80}]}],"cpu":256,"executionRole":"execution","launch":"FARGATE","logGroup":"app","memoryMiB":512}`, nil},
+		"aws_ecs_service.app":  {`{"boundary":"locust","cluster":"main","count":1,"launch":"FARGATE_SPOT","publicIp":true,"securityGroup":"web","subnet":"public","taskDefinition":"app"}`, nil},
+		"aws_instance.bastion": {`{"boundary":"locust","instanceType":"t4g.micro","securityGroup":"admin","subnet":"public"}`, nil},
+		"aws_instance.worker":  {`{"boundary":"locust","instanceType":"t4g.micro","role":"instance","securityGroup":"web","subnet":"public"}`, nil},
+	} {
+		if canonical(got[addr].Spec) != canonical([]byte(want.spec)) || !slices.Equal(got[addr].Also, want.also) {
+			t.Errorf("%s: %s with %v, want %s with %v", addr, got[addr].Spec, got[addr].Also, want.spec, want.also)
+		}
+	}
+	skipped := map[string]string{}
+	for _, sk := range res.Skipped {
+		skipped[sk.Address] = sk.Why
+	}
+	for addr, why := range map[string]string{
+		"aws_s3_bucket.logs":                   "imports aws_s3_bucket",
+		"aws_iam_role.admin":                   "is under /: Mamela's IAM catalog lets it change roles under /mamela/ only",
+		"aws_iam_role_policy_attachment.admin": "moves with its role",
+		"aws_cloudwatch_log_group.old":         "log group /ecs/old is not under /mamela/locust/",
+		"aws_ecs_task_definition.batch":        "its family batch is not mamela-locust-<name>",
+		"aws_ecs_service.batch":                "its task definition batch:1",
+	} {
+		if !strings.Contains(skipped[addr], why) {
+			t.Errorf("%s: skipped %q, want why with %q", addr, skipped[addr], why)
+		}
+	}
+	if len(res.Resources) != len(stackOrder) || len(res.Skipped) != 6 {
+		t.Fatalf("imported %d, skipped %d: %+v", len(res.Resources), len(res.Skipped), res.Skipped)
+	}
+	desired, adopting := declare(res)
+	var adopt []providertest.Explicit
+	for _, id := range stackOrder {
+		adopt = append(adopt, providertest.Explicit{Op: aws.OpAdopt, Resource: id})
+	}
+	// The declaration as a person edits it after the import: two tasks on Fargate (not Spot)
+	// without a public IP, nginx of another tag, logs kept 30 days (longer: a plan does it).
+	edited := slices.Clone(desired)
+	for i, r := range edited {
+		spec := string(r.Spec)
+		switch r.ID {
+		case "AwsEcsService app":
+			spec = strings.NewReplacer(`"count":1`, `"count":2`, `"FARGATE_SPOT"`, `"FARGATE"`, `"publicIp":true,`, ``).Replace(spec)
+		case "AwsEcsTaskDefinition app":
+			spec = strings.Replace(spec, "nginx:stable", "nginx:stable-alpine", 1)
+		case "AwsLogGroup app":
+			spec = strings.Replace(spec, `"retentionDays":14`, `"retentionDays":30`, 1)
+		}
+		edited[i].Spec = []byte(spec)
+	}
+	world := func(api http.Handler) {
+		if s := api.(*fakeaws.API).AddTerraformStack("locust"); s.Vpc != st.Vpc || s.Worker != st.Worker {
+			t.Fatal("the fake's IDs differ")
+		}
+	}
+	providertest.Run(t, providertest.Suite{
+		Provider:      providertest.BuildWASI(t, "../cmd/aws-provider"),
+		Catalogs:      shipped(t),
+		NewAPI:        func() http.Handler { return fakeaws.New() },
+		GuardSettings: stackGuard,
+		Cases: []providertest.Case{
+			{Name: "terraform-stack", Desired: desired, Adopting: adopting, Explicit: adopt, World: world},
+			{Name: "terraform-stack-edited", Desired: edited, Adopting: adopting, Explicit: adopt, World: world},
+		},
+	})
+}
+
 func canonical(b []byte) string {
 	var v any
 	json.Unmarshal(b, &v)
@@ -147,14 +270,15 @@ func canonical(b []byte) string {
 	return string(out)
 }
 
-// The whole move, as a person makes it: `mamela import terraform` with the state's JSON writes
-// the declarations (with the Pome's generated Aws.Kinds) and records them to adopt; the declaration
-// that uses them evaluates into a graph where each refers to what it needs.
+// The whole move, as a person makes it: `mamela import terraform` with the state's JSON of the
+// stack (network, IAM, logs, ECS, instances) writes the declarations (with the Pome's generated
+// Aws.Kinds) and records them to adopt, says why the rest stays Terraform's; the declaration that
+// uses them evaluates into a graph where each refers to what it needs.
 func TestImportTerraformCommand(t *testing.T) {
 	if os.Getenv("MAMELA_TOOLCHAIN_DIR") == "" {
 		t.Skip("MAMELA_TOOLCHAIN_DIR: the toolchain of Mamela")
 	}
-	n := fakeaws.New().AddTerraformNetwork()
+	n := fakeaws.New().AddTerraformStack("legacy")
 	dir := t.TempDir()
 	decl := filepath.Join(dir, "decl")
 	repo, _ := filepath.Abs("..")
@@ -210,17 +334,21 @@ fn main() {
 	out := mamela("import", "terraform", "--state", filepath.Join(dir, "state.json"), "--db", filepath.Join(dir, "state.db"), "--by", "tester",
 		"--providers", filepath.Join(dir, "mamela.providers.toml"), decl)
 	for _, want := range []string{
-		"8 of 9 resources import, as 6 declarations",
-		"with aws_route_table_association.public", "with aws_security_group_rule.ssh",
-		"aws_s3_bucket.logs", `mamela act --confirm main adopt "AwsVpc main"`,
-		"terraform state rm 'aws_internet_gateway.gw'",
+		"20 of 26 resources import, as 14 declarations",
+		"with aws_route_table_association.public", "with aws_security_group_rule.ssh", "with aws_iam_instance_profile.instance",
+		"with aws_iam_role_policy_attachment.execution", "with aws_ecs_cluster_capacity_providers.main",
+		"aws_s3_bucket.logs", "aws_iam_role.admin", "aws_cloudwatch_log_group.old", "aws_ecs_task_definition.batch", "aws_ecs_service.batch",
+		`mamela act --confirm main adopt "AwsVpc main"`, `mamela act --confirm execution adopt "AwsIamRole execution"`,
+		`mamela act --confirm app adopt "AwsEcsTaskDefinition app"`, `mamela act --confirm worker adopt "AwsInstance worker"`,
+		"terraform state rm 'aws_cloudwatch_log_group.app'", "'aws_internet_gateway.gw'", "'aws_ecs_service.app'",
 	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("import: no %q in\n%s", want, out)
 		}
 	}
 	src, _ := os.ReadFile(filepath.Join(decl, "src/imported.emel"))
-	for _, want := range []string{"import Aws.Kinds.{", `AwsVpc(name: "main", boundary: "legacy", cidr: "10.9.0.0/16")`, "|> Kinds.aws_route_table("} {
+	for _, want := range []string{"import Aws.Kinds.{", `AwsVpc(name: "main", boundary: "legacy", cidr: "10.9.0.0/16")`, "|> Kinds.aws_route_table(",
+		"|> Kinds.aws_ecs_service(", "|> Kinds.aws_instance(", `container_name: "app"`, `AwsLogGroup(name: "app", boundary: "legacy", retention_days: 14)`} {
 		if !strings.Contains(string(src), want) {
 			t.Errorf("imported.emel: no %q in\n%s", want, src)
 		}
@@ -236,7 +364,8 @@ fn main() {
 }
 `), 0o644)
 	graph := mamela("eval", decl)
-	for _, want := range []string{"6 resources", "AwsRouteTable       public", `"internetGateway":"gw","subnet":"public"`, `{"fromGroup":"admin","port":443}`} {
+	for _, want := range []string{"14 resources", "AwsRouteTable", `"internetGateway":"gw","subnet":"public"`, `{"fromGroup":"admin","port":443}`,
+		`"containerName":"app"`, `"executionRole":"execution"`, `"role":"instance"`, `"taskDefinition":"app"`} {
 		if !strings.Contains(graph, want) {
 			t.Errorf("the graph has no %s:\n%s", want, graph)
 		}

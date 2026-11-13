@@ -17,29 +17,13 @@ import (
 // declare (a rule it does not express, an object it does not make) is left as it is, or not
 // imported at all, with why.
 
-// OpAdopt is the explicit operation that adopts an imported object: it tags it.
-const OpAdopt protocol.Op = "adopt"
-
 var createTags = queryCall(APIEC2, "CreateTags", "ResourceId.1", "Tag.1.Key", "Tag.1.Value", "Tag.2.Key", "Tag.2.Value")
 
-// adoptOp is the adopt operation of a kind tagged with CreateTags.
-func adoptOp() protocol.Operation {
-	o := explicitOp(OpAdopt, createTags)
+// adoptOp is a kind's adopt, with the call that marks the object.
+func adoptOp(call protocol.Call) protocol.Operation {
+	o := explicitOp(OpAdopt, call)
 	o.Adopts = true
 	return o
-}
-
-// importer is a kind that imports Terraform's resources.
-type importer interface {
-	imports() []string
-	spec() any
-	doc() string
-	importObject(o protocol.ImportObject, r kit.Resolver, boundary string) (kit.Imported, error)
-	// idKey is the ID that names an object ("VpcId").
-	idKey() string
-	// find finds an object by its IDs, tagged or not.
-	find(c *client, ids map[string]string) (*object, error)
-	adopt(o protocol.Observed, desired protocol.Resource) (protocol.Change, error)
 }
 
 // tfValues are the attributes the network's Terraform resources have that the import reads.
@@ -120,46 +104,21 @@ func findBy(c *client, k interface {
 	return &objs[0], nil
 }
 
-// tagChange is the adopt change: tag the object (named by its ID parameter) with the declaration's
-// name and boundary. Nothing else is sent.
+// tagChange is the adopt of an EC2 object: tag it (named by its ID parameter) with the
+// declaration's name and boundary. Nothing else is sent.
 func tagChange(o protocol.Observed, desired protocol.Resource, idKey string) (protocol.Change, error) {
-	var b base
-	if err := json.Unmarshal(desired.Spec, &b); err != nil || b.Boundary == "" {
-		return protocol.Change{}, fmt.Errorf("%s: the spec has no boundary", o.ID)
+	b, err := boundaryOf(desired)
+	if err != nil {
+		return protocol.Change{}, err
 	}
 	id := o.IDs[idKey]
-	if id == "" {
-		return protocol.Change{}, fmt.Errorf("%s: no %s observed", o.ID, idKey)
-	}
-	return protocol.Change{Resource: o.ID, Kind: o.Kind, Op: OpAdopt, IDs: map[string]string{idKey: id, "ResourceId.1": id},
-		Reasons: []string{fmt.Sprintf("adopt %s: tag it %s=%s and %s=%s, which makes it Mamela's; nothing else changes", id, TagName, desired.Name, TagBoundary, b.Boundary)},
-		Requests: []protocol.Approved{queryReq(APIEC2, "CreateTags", map[string]string{"ResourceId.1": id,
-			"Tag.1.Key": TagName, "Tag.1.Value": desired.Name, "Tag.2.Key": TagBoundary, "Tag.2.Value": b.Boundary})}}, nil
-}
-
-// adopted says whether an adopt's tags are on the object: it is listed (tagged) under the name.
-func adopted(c *client, k kind, ch protocol.Change, a protocol.Approved) (bool, error) {
-	objs, err := k.list(c)
-	if err != nil {
-		return false, err
-	}
-	id, name := param(a, "ResourceId.1"), nameOf(ch)
-	return slices.ContainsFunc(objs, func(x object) bool {
-		return x.Name == name && slices.Contains(mapValues(x.IDs), id)
-	}), nil
-}
-
-func mapValues(m map[string]string) []string {
-	var out []string
-	for _, v := range m {
-		out = append(out, v)
-	}
-	return out
+	return adoptChange(o, desired, map[string]string{idKey: id, "ResourceId.1": id},
+		fmt.Sprintf("adopt %s: tag it %s=%s and %s=%s, which makes it Mamela's; nothing else changes", id, TagName, desired.Name, TagBoundary, b),
+		queryReq(APIEC2, "CreateTags", map[string]string{"ResourceId.1": id,
+			"Tag.1.Key": TagName, "Tag.1.Value": desired.Name, "Tag.2.Key": TagBoundary, "Tag.2.Value": b}))
 }
 
 // --- VPC ---
-
-func (vpcKind) idKey() string { return "VpcId" }
 
 func (vpcKind) imports() []string { return []string{"aws_vpc"} }
 func (vpcKind) spec() any         { return vpcSpec{} }
@@ -182,8 +141,6 @@ func (vpcKind) adopt(o protocol.Observed, d protocol.Resource) (protocol.Change,
 }
 
 // --- internet gateway ---
-
-func (gatewayKind) idKey() string { return "InternetGatewayId" }
 
 func (gatewayKind) imports() []string { return []string{"aws_internet_gateway"} }
 func (gatewayKind) spec() any         { return gatewaySpec{} }
@@ -211,8 +168,6 @@ func (gatewayKind) adopt(o protocol.Observed, d protocol.Resource) (protocol.Cha
 
 // --- subnet ---
 
-func (subnetKind) idKey() string { return "SubnetId" }
-
 func (subnetKind) imports() []string { return []string{"aws_subnet"} }
 func (subnetKind) spec() any         { return subnetSpec{} }
 func (subnetKind) doc() string       { return "A subnet in one availability zone." }
@@ -238,8 +193,6 @@ func (subnetKind) adopt(o protocol.Observed, d protocol.Resource) (protocol.Chan
 }
 
 // --- route table ---
-
-func (routeTableKind) idKey() string { return "RouteTableId" }
 
 func (routeTableKind) imports() []string {
 	return []string{"aws_route_table", "aws_route_table_association", "aws_route"}
@@ -325,8 +278,6 @@ func (routeTableKind) adopt(o protocol.Observed, d protocol.Resource) (protocol.
 }
 
 // --- security group ---
-
-func (groupKind) idKey() string { return "GroupId" }
 
 func (groupKind) imports() []string {
 	return []string{"aws_security_group", "aws_security_group_rule", "aws_vpc_security_group_ingress_rule"}

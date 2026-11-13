@@ -7,8 +7,13 @@
 //
 // Everything it makes carries the tags mamela:name (the resource's name) and mamela:boundary
 // (the declaration's boundary), and AWS names that start with the boundary. It changes only what
-// it made (Mamela vouches for that with its own records), never deletes as a plan's change, and
-// its guard holds every apply to the operator's boundary and budget.
+// it made or a person adopted (Mamela vouches for that with its own records), never deletes,
+// reboots or stops as a plan's change (delete, resize, reboot and shorten-retention are explicit
+// operations), and its guard holds every apply to the operator's boundary and budget.
+//
+// What Terraform made moves to Mamela (ADR 0009 of Mamela): every kind imports its Terraform
+// types, and adopt adds Mamela's marks to an imported object (tags, a role's description), and
+// nothing else. What Mamela cannot adopt safely is not imported, and the import says why.
 package aws
 
 import (
@@ -19,9 +24,9 @@ import (
 	"errors"
 	"fmt"
 	"maps"
-	"slices"
 	"strings"
 
+	"github.com/ieyoukan/mamela/provider/kit"
 	"github.com/ieyoukan/mamela/provider/protocol"
 	"github.com/ieyoukan/mamela/provider/sdk"
 )
@@ -50,15 +55,26 @@ const (
 	TagBoundary = "mamela:boundary"
 )
 
-// OpDelete is every kind's explicit delete (ADR 0006 of Mamela): never planned.
-const OpDelete protocol.Op = "delete"
+// Explicit operations (ADR 0006 of Mamela): never planned; a person carries one out with
+// `mamela act --confirm <name> <op> <resource> <pome-dir>`.
+const (
+	// OpDelete is every kind's delete.
+	OpDelete protocol.Op = "delete"
+	// OpAdopt adopts an imported object (mamela import terraform, ADR 0009 of Mamela): it adds
+	// Mamela's marks to it (tags; a role's description), and nothing else.
+	OpAdopt protocol.Op = "adopt"
+)
 
-// object is one AWS object this provider made, as observed.
+// object is one AWS object this provider made (or someone else made, Foreign), as observed.
 type object struct {
 	Name, Boundary string
 	IDs            map[string]string
 	Version        string
 	State          any
+	// Foreign: an object where Mamela keeps its own (a log group under /mamela/<boundary>/) that
+	// carries none of Mamela's marks. A declaration of its name is refused; a person may adopt it
+	// once it is imported.
+	Foreign bool
 }
 
 // kind is one resource kind.
@@ -79,6 +95,26 @@ type kind interface {
 	// done says whether an approved request is in effect already (for apply to skip it, and for
 	// lookup).
 	done(c *client, ch protocol.Change, a protocol.Approved) (bool, error)
+
+	// spec is the Go type of its spec (the manifest's, from which its Pome is generated); doc
+	// says what a resource of it is.
+	spec() any
+	doc() string
+	// imports are the Terraform types it imports; importObject declares one of them in the
+	// boundary, or says why it does not (kit.Skip).
+	imports() []string
+	importObject(o protocol.ImportObject, r kit.Resolver, boundary string) (kit.Imported, error)
+	// find finds an object by the IDs it was imported with, while it carries none of Mamela's
+	// marks (nil when there is none, or it is Mamela's already).
+	find(c *client, ids map[string]string) (*object, error)
+	// adopt is the change that adds Mamela's marks to an imported object (tags; a role's
+	// description), and nothing else.
+	adopt(o protocol.Observed, desired protocol.Resource) (protocol.Change, error)
+}
+
+// explicitKind is a kind with explicit operations besides delete and adopt (an instance's resize).
+type explicitKind interface {
+	prepare(op protocol.Op, o protocol.Observed, desired *protocol.Resource) (protocol.Change, error)
 }
 
 var kinds = []kind{vpcKind{}, gatewayKind{}, subnetKind{}, routeTableKind{}, groupKind{}, logGroupKind{}, roleKind{},
@@ -102,10 +138,12 @@ func needs(actions ...string) []protocol.Need {
 	return out
 }
 
-// alreadyDone: AWS's answers to a create of something that exists (a retry after a lost answer).
+// alreadyDone: AWS's answers that say a request's effect is there already (a retry after a lost
+// answer, which its done did not see). Only an answer that says this very effect is there counts:
+// "already exists" of a create does not (the object may be someone else's), nor "already
+// associated" (maybe with something else); they are errors, and the next plan looks again.
 func alreadyDone(code string) bool {
-	return slices.Contains([]string{"InvalidGroup.Duplicate", "InvalidPermission.Duplicate", "RouteAlreadyExists", "Resource.AlreadyAssociated",
-		"EntityAlreadyExists", "ResourceAlreadyExistsException", "LimitExceeded.AlreadyAdded"}, code)
+	return code == "InvalidPermission.Duplicate" // the very rule exists
 }
 
 // base is what every spec has.

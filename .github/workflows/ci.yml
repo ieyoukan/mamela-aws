@@ -21,6 +21,18 @@ jobs:
       - name: Mamela's pinned toolchain (emela, wasmtime) and the Pomes' dependencies
         working-directory: mamela
         run: scripts/install-toolchain.sh
+      # AWS's models the catalogs come from (catalogs/models.lock.json: commit and sha256 pinned):
+      # with them, the tests check that pome/catalogs is what they and the overlay give.
+      - uses: actions/cache@v4
+        with:
+          path: mamela-aws/.cache/aws-models
+          key: aws-models-${{ hashFiles('mamela-aws/catalogs/models.lock.json') }}
+      - name: AWS's models
+        working-directory: mamela-aws
+        env:
+          GOTOOLCHAIN: local
+          GOWORK: "off"
+        run: go run ./cmd/aws-catalogs fetch
       - name: Test
         working-directory: mamela-aws
         env:

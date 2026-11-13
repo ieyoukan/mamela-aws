@@ -73,17 +73,19 @@ type instance struct {
 	id, typ, image, ip, token, state, subnet, profile, cluster string
 	groups                                                     []string
 	tags                                                       tags
+	stopping                                                   int // describes that still see it stopping
+	reboots                                                    int
 }
 
 type role struct {
-	name, trust, description string
-	policies                 []string
-	tags                     tags
+	name, path, trust, description string
+	policies                       []string
+	tags                           tags
 }
 
 type profile struct {
-	name  string
-	roles []string
+	name, path string
+	roles      []string
 }
 
 type cluster struct {
@@ -97,6 +99,7 @@ type taskDef struct {
 	status     string
 	tags       []map[string]string
 	compatible []string
+	content    map[string]any // as registered (without family and tags)
 }
 
 type service struct {
@@ -116,6 +119,11 @@ type logGroup struct {
 	name      string
 	retention int64
 	tags      map[string]string
+	stored    int64 // bytes of logs
+}
+
+func (g *logGroup) arn() string {
+	return "arn:aws:logs:" + Region + ":" + Account + ":log-group:" + g.name
 }
 
 // API is the fake. Its zero value is not usable: use New.
@@ -137,6 +145,8 @@ type API struct {
 	logs     []*logGroup
 	// Requests counts the requests of each action ("ec2:RunInstances").
 	Requests map[string]int
+	// StopDelay is how many times DescribeInstances still sees a stopped instance stopping.
+	StopDelay int
 }
 
 // New returns an empty account.
@@ -163,6 +173,17 @@ func (a *API) AddForeignVpc() string {
 	v := &vpc{id: a.id("vpc"), cidr: "172.31.0.0/16"}
 	a.vpcs = append(a.vpcs, v)
 	return v.id
+}
+
+// SetLogBytes sets how many bytes of logs a log group stores (as if tasks had written them).
+func (a *API) SetLogBytes(name string, n int64) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	for _, g := range a.logs {
+		if g.name == name {
+			g.stored = n
+		}
+	}
 }
 
 // SetInstanceState sets an instance's state (to stop one, as someone might).
@@ -912,19 +933,39 @@ func (a *API) ec2(act string, p map[string]string) (any, error) {
 		return ok(act), nil
 
 	case "DescribeInstances":
+		type group struct {
+			ID string `xml:"groupId"`
+		}
 		type item struct {
 			ID          string   `xml:"instanceId"`
 			Type        string   `xml:"instanceType"`
 			Image       string   `xml:"imageId"`
 			PrivateIP   string   `xml:"privateIpAddress,omitempty"`
-			ClientToken string   `xml:"clientToken"`
+			ClientToken string   `xml:"clientToken,omitempty"`
 			State       string   `xml:"instanceState>name"`
+			Subnet      string   `xml:"subnetId,omitempty"`
+			Groups      []group  `xml:"groupSet>item"`
+			Profile     string   `xml:"iamInstanceProfile>arn,omitempty"`
 			Tags        []xmlTag `xml:"tagSet>item"`
 		}
 		var items []item
 		for _, i := range a.insts {
-			if matches(fs, i.tags, map[string]string{"instance-state-name": i.state, "client-token": i.token}) {
-				items = append(items, item{i.id, i.typ, i.image, i.ip, i.token, i.state, xmlTags(i.tags)})
+			if i.state == "stopping" {
+				if i.stopping > 0 {
+					i.stopping--
+				} else {
+					i.state = "stopped"
+				}
+			}
+			if matches(fs, i.tags, map[string]string{"instance-state-name": i.state, "client-token": i.token, "instance-id": i.id}) {
+				it := item{ID: i.id, Type: i.typ, Image: i.image, PrivateIP: i.ip, ClientToken: i.token, State: i.state, Subnet: i.subnet, Tags: xmlTags(i.tags)}
+				for _, g := range i.groups {
+					it.Groups = append(it.Groups, group{g})
+				}
+				if p := a.findProfile(i.profile); p != nil {
+					it.Profile = "arn:aws:iam::" + Account + ":instance-profile" + p.path + p.name
+				}
+				items = append(items, it)
 			}
 		}
 		start := 0
@@ -1001,7 +1042,7 @@ func (a *API) ec2(act string, p map[string]string) (any, error) {
 			XMLName xml.Name `xml:"RunInstancesResponse"`
 			ID      string   `xml:"instancesSet>item>instanceId"`
 		}{ID: i.id}, nil
-	case "StartInstances", "StopInstances", "TerminateInstances":
+	case "StartInstances", "StopInstances", "RebootInstances", "TerminateInstances":
 		i := slices.IndexFunc(a.insts, func(x *instance) bool { return x.id == p["InstanceId.1"] })
 		if i < 0 {
 			return nil, fail(400, "InvalidInstanceID.NotFound", "the instance ID '%s' does not exist", p["InstanceId.1"])
@@ -1009,14 +1050,45 @@ func (a *API) ec2(act string, p map[string]string) (any, error) {
 		x := a.insts[i]
 		switch act {
 		case "StartInstances":
-			if x.state == "terminated" {
+			if x.state != "stopped" && x.state != "running" && x.state != "pending" {
 				return nil, fail(400, "IncorrectInstanceState", "the instance '%s' is not in a state from which it can be started", x.id)
 			}
 			x.state = "running"
 		case "StopInstances":
-			x.state = "stopped"
+			if x.state == "running" || x.state == "pending" {
+				x.state, x.stopping = "stopping", a.StopDelay
+			}
+		case "RebootInstances":
+			if x.state != "running" {
+				return nil, fail(400, "IncorrectInstanceState", "the instance '%s' is not running", x.id)
+			}
+			x.reboots++
 		default:
 			x.state = "terminated"
+		}
+		return ok(act), nil
+	case "ModifyInstanceAttribute":
+		i := slices.IndexFunc(a.insts, func(x *instance) bool { return x.id == p["InstanceId"] })
+		if i < 0 {
+			return nil, fail(400, "InvalidInstanceID.NotFound", "the instance ID '%s' does not exist", p["InstanceId"])
+		}
+		x := a.insts[i]
+		switch t, g := p["InstanceType.Value"], p["GroupId.1"]; {
+		case t != "" && g != "":
+			return nil, fail(400, "InvalidParameterCombination", "only one attribute can be modified at a time")
+		case t != "":
+			if x.state != "stopped" {
+				return nil, fail(400, "IncorrectInstanceState", "the instance '%s' is not in the 'stopped' state", x.id)
+			}
+			x.typ = t
+		case g != "":
+			sg, sub := a.findGroup(g), a.findSubnet(x.subnet)
+			if sg == nil || sub == nil || sg.vpc != sub.vpc {
+				return nil, fail(400, "InvalidGroup.NotFound", "the security group '%s' does not exist in the instance's VPC", g)
+			}
+			x.groups = []string{g}
+		default:
+			return nil, fail(400, "MissingParameter", "an attribute to modify is required")
 		}
 		return ok(act), nil
 	}
@@ -1043,8 +1115,10 @@ func (a *API) findProfile(name string) *profile {
 	return nil
 }
 
-// RoleArn is a role's ARN in the fake account.
+// RoleArn is the ARN of a role under /mamela/ in the fake account.
 func RoleArn(name string) string { return "arn:aws:iam::" + Account + ":role/mamela/" + name }
+
+func roleArn(r *role) string { return "arn:aws:iam::" + Account + ":role" + r.path + r.name }
 
 type iamTag struct {
 	Key   string `xml:"Key"`
@@ -1080,7 +1154,7 @@ func (a *API) iam(act string, p map[string]string) (any, error) {
 	case "ListRoles":
 		var names []string
 		for _, r := range a.roles {
-			if strings.HasPrefix("/mamela/", p["PathPrefix"]) {
+			if strings.HasPrefix(r.path, p["PathPrefix"]) {
 				names = append(names, r.name)
 			}
 		}
@@ -1111,11 +1185,22 @@ func (a *API) iam(act string, p map[string]string) (any, error) {
 		}
 		return struct {
 			XMLName     xml.Name `xml:"GetRoleResponse"`
+			Path        string   `xml:"GetRoleResult>Role>Path"`
 			Arn         string   `xml:"GetRoleResult>Role>Arn"`
 			Trust       string   `xml:"GetRoleResult>Role>AssumeRolePolicyDocument"`
 			Description string   `xml:"GetRoleResult>Role>Description,omitempty"`
 			Tags        []iamTag `xml:"GetRoleResult>Role>Tags>member"`
-		}{Arn: RoleArn(r.name), Trust: url.QueryEscape(r.trust), Description: r.description, Tags: ts}, nil
+		}{Path: r.path, Arn: roleArn(r), Trust: url.QueryEscape(r.trust), Description: r.description, Tags: ts}, nil
+	case "UpdateRole":
+		r := a.findRole(p["RoleName"])
+		if r == nil {
+			return nil, noRole(p["RoleName"])
+		}
+		if _, ok := p["MaxSessionDuration"]; ok {
+			return nil, fail(400, "ValidationError", "the fake changes only a role's description")
+		}
+		r.description = p["Description"]
+		return done, nil
 	case "CreateRole":
 		if a.findRole(p["RoleName"]) != nil {
 			return nil, fail(409, "EntityAlreadyExists", "role with name %s already exists", p["RoleName"])
@@ -1128,7 +1213,7 @@ func (a *API) iam(act string, p map[string]string) (any, error) {
 			return nil, fail(400, "MalformedPolicyDocument", "the trust policy is not JSON")
 		}
 		t, _ := iamTagsOf(p)
-		a.roles = append(a.roles, &role{name: p["RoleName"], trust: p["AssumeRolePolicyDocument"], description: p["Description"], tags: t})
+		a.roles = append(a.roles, &role{name: p["RoleName"], path: p["Path"], trust: p["AssumeRolePolicyDocument"], description: p["Description"], tags: t})
 		return done, nil
 	case "ListAttachedRolePolicies":
 		r := a.findRole(p["RoleName"])
@@ -1167,7 +1252,7 @@ func (a *API) iam(act string, p map[string]string) (any, error) {
 		if a.findProfile(p["InstanceProfileName"]) != nil {
 			return nil, fail(409, "EntityAlreadyExists", "instance profile %s already exists", p["InstanceProfileName"])
 		}
-		a.profiles = append(a.profiles, &profile{name: p["InstanceProfileName"]})
+		a.profiles = append(a.profiles, &profile{name: p["InstanceProfileName"], path: p["Path"]})
 		return done, nil
 	case "AddRoleToInstanceProfile":
 		x := a.findProfile(p["InstanceProfileName"])
@@ -1238,7 +1323,7 @@ func (a *API) logsCall(act string, in map[string]any) (any, error) {
 		var groups []map[string]any
 		for _, g := range a.logs {
 			if strings.HasPrefix(g.name, str(in, "logGroupNamePrefix")) {
-				m := map[string]any{"logGroupName": g.name, "arn": "arn:aws:logs:" + Region + ":" + Account + ":log-group:" + g.name + ":*"}
+				m := map[string]any{"logGroupName": g.name, "arn": g.arn() + ":*", "logGroupArn": g.arn(), "storedBytes": g.stored}
 				if g.retention > 0 {
 					m["retentionInDays"] = g.retention
 				}
@@ -1264,6 +1349,27 @@ func (a *API) logsCall(act string, in map[string]any) (any, error) {
 			}
 		}
 		a.logs = append(a.logs, &logGroup{name: name, tags: t})
+		return map[string]any{}, nil
+	case "ListTagsForResource", "TagResource":
+		arn := str(in, "resourceArn")
+		j := slices.IndexFunc(a.logs, func(g *logGroup) bool { return g.arn() == arn })
+		if j < 0 {
+			return nil, fail(400, "ResourceNotFoundException", "the specified resource %s does not exist", arn)
+		}
+		g := a.logs[j]
+		if act == "ListTagsForResource" {
+			return map[string]any{"tags": maps.Clone(g.tags)}, nil
+		}
+		m, ok := in["tags"].(map[string]any)
+		if !ok || len(m) == 0 {
+			return nil, fail(400, "InvalidParameterException", "tags are a map")
+		}
+		if g.tags == nil {
+			g.tags = map[string]string{}
+		}
+		for k, v := range m {
+			g.tags[k], _ = v.(string)
+		}
 		return map[string]any{}, nil
 	case "PutRetentionPolicy", "DeleteLogGroup":
 		if i < 0 {

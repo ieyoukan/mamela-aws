@@ -213,6 +213,8 @@
         "service",
         "desiredCount",
         "taskDefinition",
+        "capacityProviderStrategy",
+        "networkConfiguration",
         "forceNewDeployment"
       ],
       "bind": [
@@ -372,6 +374,24 @@
       "json": [
         "cluster",
         "containerInstances"
+      ]
+    },
+    {
+      "method": "POST",
+      "path": "/",
+      "effect": "change",
+      "fixed": {
+        "X-Amz-Target": "AmazonEC2ContainerServiceV20141113.TagResource"
+      },
+      "header": [
+        "X-Amz-Target"
+      ],
+      "json": [
+        "resourceArn",
+        "tags"
+      ],
+      "bind": [
+        "resourceArn"
       ]
     }
   ]

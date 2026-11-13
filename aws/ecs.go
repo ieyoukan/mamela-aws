@@ -10,12 +10,15 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/ieyoukan/mamela/provider/kit"
 	"github.com/ieyoukan/mamela/provider/protocol"
 )
 
 // ECS: a cluster (Fargate and Fargate Spot, and container instances on EC2), task definitions and
 // services. A one-off task (a load test) is not declared: it is the explicit operation run-task
 // of a service, which runs one task the way the service runs its own (a service may keep zero).
+// Mamela's ECS objects carry the tags mamela:name and mamela:boundary; one a person adopts keeps
+// its own name, and gets the tags (TagResource).
 
 // Kinds and operations of ECS.
 const (
@@ -24,7 +27,7 @@ const (
 	KindService        protocol.ResourceKind = "AwsEcsService"
 
 	OpRevise  protocol.Op = "revise"   // a new revision of a task definition
-	OpUpdate  protocol.Op = "update"   // a service's count or task definition
+	OpUpdate  protocol.Op = "update"   // a service's count, task definition, Fargate (Spot) and network
 	OpRunTask protocol.Op = "run-task" // explicit: one task, as the service runs them
 )
 
@@ -38,6 +41,9 @@ const (
 	TagDigest = "mamela:digest"
 	// TagRun is the token of a run-task: the task it started carries it.
 	TagRun = "mamela:run"
+	// TagOrigin is the revision a task definition's lineage started with (the one Mamela
+	// registered or adopted first): every later revision carries it.
+	TagOrigin = "mamela:origin"
 )
 
 // Launches: how a service runs its tasks.
@@ -48,24 +54,22 @@ const (
 )
 
 var (
-	listClusters      = jsonCall(APIECS, "ListClusters", "nextToken")
-	describeClusters  = jsonCall(APIECS, "DescribeClusters", "clusters", "include")
-	createCluster     = jsonCall(APIECS, "CreateCluster", "clusterName", "capacityProviders", "defaultCapacityProviderStrategy", "tags", "settings")
-	deleteCluster     = jsonCall(APIECS, "DeleteCluster", "cluster")
-	listTaskDefs      = jsonCall(APIECS, "ListTaskDefinitions", "status", "nextToken")
-	describeTaskDef   = jsonCall(APIECS, "DescribeTaskDefinition", "taskDefinition", "include")
-	registerTaskDef   = jsonCall(APIECS, "RegisterTaskDefinition", "family", "containerDefinitions", "cpu", "memory", "networkMode", "requiresCompatibilities", "executionRoleArn", "tags")
-	deregisterTaskDef = jsonCall(APIECS, "DeregisterTaskDefinition", "taskDefinition")
-	listServices      = jsonCall(APIECS, "ListServices", "cluster", "nextToken")
-	describeServices  = jsonCall(APIECS, "DescribeServices", "cluster", "services", "include")
-	createService     = jsonCall(APIECS, "CreateService", "cluster", "serviceName", "taskDefinition", "desiredCount", "launchType", "capacityProviderStrategy",
+	listClusters     = jsonCall(APIECS, "ListClusters", "nextToken")
+	describeClusters = jsonCall(APIECS, "DescribeClusters", "clusters", "include")
+	createCluster    = jsonCall(APIECS, "CreateCluster", "clusterName", "capacityProviders", "defaultCapacityProviderStrategy", "tags", "settings")
+	deleteCluster    = jsonCall(APIECS, "DeleteCluster", "cluster")
+	listServices     = jsonCall(APIECS, "ListServices", "cluster", "nextToken")
+	describeServices = jsonCall(APIECS, "DescribeServices", "cluster", "services", "include")
+	createService    = jsonCall(APIECS, "CreateService", "cluster", "serviceName", "taskDefinition", "desiredCount", "launchType", "capacityProviderStrategy",
 		"networkConfiguration", "deploymentConfiguration", "tags")
-	updateService = jsonCall(APIECS, "UpdateService", "cluster", "service", "desiredCount", "taskDefinition")
+	updateService = jsonCall(APIECS, "UpdateService", "cluster", "service", "desiredCount", "taskDefinition", "capacityProviderStrategy",
+		"networkConfiguration", "forceNewDeployment")
 	deleteService = jsonCall(APIECS, "DeleteService", "cluster", "service", "force")
 	listTasks     = jsonCall(APIECS, "ListTasks", "cluster", "startedBy", "desiredStatus", "nextToken")
 	describeTasks = jsonCall(APIECS, "DescribeTasks", "cluster", "tasks", "include")
 	runTask       = jsonCall(APIECS, "RunTask", "cluster", "taskDefinition", "count", "launchType", "capacityProviderStrategy", "networkConfiguration",
 		"startedBy", "clientToken", "tags")
+	tagECS = jsonCall(APIECS, "TagResource", "resourceArn", "tags")
 )
 
 // ecsTagsWith are ECS tags with more.
@@ -80,12 +84,51 @@ func ecsTagsWith(boundary, name string, more ...[2]string) []map[string]string {
 // lastPart is what follows the last "/" of an ARN ("cluster/x" -> "x").
 func lastPart(arn string) string { return arn[strings.LastIndex(arn, "/")+1:] }
 
+// tagChangeECS is the adopt of an ECS object: tag it (by its ARN) with the declaration's name and
+// boundary, and more (a task definition's digest). Nothing else is sent.
+func tagChangeECS(o protocol.Observed, desired protocol.Resource, ids map[string]string, what string, more ...[2]string) (protocol.Change, error) {
+	b, err := boundaryOf(desired)
+	if err != nil {
+		return protocol.Change{}, err
+	}
+	arn := o.IDs["resourceArn"]
+	ids = maps.Clone(ids)
+	ids["resourceArn"] = arn
+	return adoptChange(o, desired, ids,
+		fmt.Sprintf("adopt %s: tag it %s=%s and %s=%s, which makes it Mamela's; nothing else changes", what, TagName, desired.Name, TagBoundary, b),
+		jsonReq(APIECS, "TagResource", map[string]any{"resourceArn": arn, "tags": ecsTagsWith(b, desired.Name, more...)}))
+}
+
+// importedAs is the name of the declaration an imported object of a kind makes, if its kind
+// declares it (and does not skip it): what a reference to it names.
+func importedAs(k kind, r kit.Resolver, x protocol.ImportObject, boundary string) (string, error) {
+	if _, err := k.importObject(x, r, boundary); err != nil {
+		return "", err
+	}
+	return x.Name, nil
+}
+
+// referTo is the declaration of the imported object of a type that matches, or why there is none.
+func referTo(k kind, r kit.Resolver, tfType, what string, boundary string, match func(protocol.ImportObject) bool) (string, error) {
+	for _, x := range r.Objects(tfType) {
+		if !match(x) {
+			continue
+		}
+		n, err := importedAs(k, r, x, boundary)
+		if err != nil {
+			return "", kit.Skip(fmt.Sprintf("its %s (%s) is not imported: %v", what, x.Address, err))
+		}
+		return n, nil
+	}
+	return "", kit.Skip(fmt.Sprintf("its %s is not in the state: import it with this (a %s of the same state)", what, tfType))
+}
+
 // --- cluster ----------------------------------------------------------------------------------
 
 type clusterKind struct{}
 
 type clusterSpec struct {
-	Boundary string `json:"boundary"`
+	Boundary string `json:"boundary" doc:"the boundary (the guard's): it tags the cluster"`
 }
 
 type clusterState struct {
@@ -95,6 +138,7 @@ type clusterState struct {
 
 // ecsCluster is a cluster as DescribeClusters answers.
 type ecsCluster struct {
+	Arn       string   `json:"clusterArn"`
 	Name      string   `json:"clusterName"`
 	Status    string   `json:"status"`
 	Instances int64    `json:"registeredContainerInstancesCount"`
@@ -126,8 +170,12 @@ func allClusters(c *client) ([]ecsCluster, error) {
 		next = resp.Next
 	}
 	slices.Sort(arns)
+	return describeClustersOf(c, arns)
+}
+
+func describeClustersOf(c *client, refs []string) ([]ecsCluster, error) {
 	var out []ecsCluster
-	for chunk := range slices.Chunk(arns, 100) {
+	for chunk := range slices.Chunk(refs, 100) {
 		var resp struct {
 			Clusters []ecsCluster `json:"clusters"`
 		}
@@ -139,10 +187,19 @@ func allClusters(c *client) ([]ecsCluster, error) {
 	return out, nil
 }
 
+func clusterObject(x ecsCluster) object {
+	return object{Name: ecsTagOf(x.Tags, TagName), Boundary: ecsTagOf(x.Tags, TagBoundary), IDs: map[string]string{"cluster": x.Name, "resourceArn": x.Arn},
+		State: clusterState{Instances: x.Instances, Running: x.Running + x.Pending}}
+}
+
 func (clusterKind) kind() protocol.ResourceKind { return KindCluster }
 func (clusterKind) reads() []protocol.Call      { return []protocol.Call{listClusters, describeClusters} }
 func (clusterKind) operations() []protocol.Operation {
-	return []protocol.Operation{op(OpCreate, createCluster), deleteOp(deleteCluster)}
+	return []protocol.Operation{op(OpCreate, createCluster), deleteOp(deleteCluster), adoptOp(tagECS)}
+}
+func (clusterKind) spec() any { return clusterSpec{} }
+func (clusterKind) doc() string {
+	return "An ECS cluster: Fargate and Fargate Spot (Spot by default), and the container instances that join it. Container Insights is off."
 }
 
 func (clusterKind) list(c *client) ([]object, error) {
@@ -155,8 +212,7 @@ func (clusterKind) list(c *client) ([]object, error) {
 		if ecsTagOf(x.Tags, TagName) == "" || x.Status == "INACTIVE" {
 			continue
 		}
-		out = append(out, object{Name: ecsTagOf(x.Tags, TagName), Boundary: ecsTagOf(x.Tags, TagBoundary), IDs: map[string]string{"cluster": x.Name},
-			State: clusterState{Instances: x.Instances, Running: x.Running + x.Pending}})
+		out = append(out, clusterObject(x))
 	}
 	return out, nil
 }
@@ -168,12 +224,12 @@ func (clusterKind) diff(r protocol.Resource, o protocol.Observed, _ map[string]p
 	if err != nil {
 		return nil, err
 	}
+	if o.Exists {
+		return nil, nil // its settings and capacity providers stay as they are
+	}
 	name := awsName(s.Boundary, r.Name)
 	if err := checkName(name); err != nil {
 		return nil, err
-	}
-	if o.Exists {
-		return nil, nil
 	}
 	return []protocol.Change{{Resource: r.ID, Kind: KindCluster, Op: OpCreate, IDs: map[string]string{"mamela-name": r.Name, "cluster": name},
 		Reasons: []string{"ECS cluster " + name + " (Fargate Spot by default; Container Insights off)"},
@@ -195,7 +251,7 @@ func (clusterKind) remove(o protocol.Observed) (protocol.Change, error) {
 		Requests: []protocol.Approved{jsonReq(APIECS, "DeleteCluster", map[string]any{"cluster": name})}}, nil
 }
 
-func (k clusterKind) done(c *client, _ protocol.Change, a protocol.Approved) (bool, error) {
+func (k clusterKind) done(c *client, ch protocol.Change, a protocol.Approved) (bool, error) {
 	objs, err := k.list(c)
 	if err != nil {
 		return false, err
@@ -211,278 +267,52 @@ func (k clusterKind) done(c *client, _ protocol.Change, a protocol.Approved) (bo
 	return false, nil
 }
 
-// --- task definition --------------------------------------------------------------------------
-
-type taskDefinitionKind struct{}
-
-// Container is one container of a task definition.
-type Container struct {
-	Name        string   `json:"name"`
-	Image       string   `json:"image"`
-	Command     []string `json:"command,omitempty"`
-	Environment []Env    `json:"environment,omitempty"`
-	Ports       []Port   `json:"ports,omitempty"`
-	MemoryMiB   int64    `json:"memoryMiB,omitempty"`
+func (clusterKind) imports() []string {
+	return []string{"aws_ecs_cluster", "aws_ecs_cluster_capacity_providers"}
 }
 
-// Env is an environment variable: Value, or Prefix and the private IP address of the
-// AwsInstance InstanceIP ("http://10.0.1.5").
-type Env struct {
-	Name       string `json:"name"`
-	Value      string `json:"value,omitempty"`
-	InstanceIP string `json:"instanceIp,omitempty"`
-	Prefix     string `json:"prefix,omitempty"`
+// importObject declares a cluster; its capacity providers (aws_ecs_cluster_capacity_providers)
+// move with it. Mamela does not change an existing cluster's settings or capacity providers.
+func (clusterKind) importObject(o protocol.ImportObject, r kit.Resolver, boundary string) (kit.Imported, error) {
+	var v struct {
+		Name        string `json:"name"`
+		ClusterName string `json:"cluster_name"`
+	}
+	if err := kit.Values(o, &v); err != nil {
+		return kit.Imported{}, fmt.Errorf("the attributes of %s: %w", o.Address, err)
+	}
+	if o.Type == "aws_ecs_cluster_capacity_providers" {
+		return kit.Imported{}, kit.Skip("capacity providers move with their cluster (aws_ecs_cluster of the same state)")
+	}
+	if err := checkName(v.Name); err != nil {
+		return kit.Imported{}, kit.Skip("no cluster name: " + err.Error())
+	}
+	var also []string
+	for _, x := range r.Objects("aws_ecs_cluster_capacity_providers") {
+		var cv struct {
+			ClusterName string `json:"cluster_name"`
+		}
+		if kit.Values(x, &cv) == nil && cv.ClusterName == v.Name {
+			also = append(also, x.Address)
+		}
+	}
+	return kit.Imported{Spec: clusterSpec{Boundary: boundary}, IDs: map[string]string{"cluster": v.Name}, Also: also}, nil
 }
 
-// Port is a container's port, and on EC2 the instance's port it is reached on.
-type Port struct {
-	Container int64 `json:"container"`
-	Host      int64 `json:"host,omitempty"`
-}
-
-type taskDefinitionSpec struct {
-	Boundary      string      `json:"boundary"`
-	Launch        string      `json:"launch"`    // FARGATE (Fargate and Fargate Spot) or EC2
-	CPU           int64       `json:"cpu"`       // CPU units, 1024 to a vCPU
-	MemoryMiB     int64       `json:"memoryMiB"` // MiB
-	ExecutionRole string      `json:"executionRole,omitempty"`
-	LogGroup      string      `json:"logGroup,omitempty"`
-	Containers    []Container `json:"containers"`
-}
-
-type taskDefinitionState struct {
-	Revision int64  `json:"revision"`
-	Digest   string `json:"digest"`
-}
-
-// Family is a task definition's family.
-func Family(boundary, name string) string { return familyPrefix + awsName(boundary, name) }
-
-func (taskDefinitionKind) kind() protocol.ResourceKind { return KindTaskDefinition }
-func (taskDefinitionKind) reads() []protocol.Call {
-	return []protocol.Call{listTaskDefs, describeTaskDef}
-}
-func (taskDefinitionKind) operations() []protocol.Operation {
-	return []protocol.Operation{op(OpCreate, registerTaskDef), op(OpRevise, registerTaskDef, deregisterTaskDef), deleteOp(deregisterTaskDef)}
-}
-
-// latestTaskDefinitions are the latest active revision of each family of this provider's.
-func latestTaskDefinitions(c *client) (map[string]int64, error) {
-	latest := map[string]int64{}
-	next := ""
-	for {
-		var resp struct {
-			Arns []string `json:"taskDefinitionArns"`
-			Next string   `json:"nextToken"`
-		}
-		m := map[string]any{"status": "ACTIVE"}
-		if next != "" {
-			m["nextToken"] = next
-		}
-		if err := c.call(APIECS, "ListTaskDefinitions", m, &resp); err != nil {
-			return nil, err
-		}
-		for _, arn := range resp.Arns {
-			family, rev, ok := strings.Cut(lastPart(arn), ":")
-			n, err := strconv.ParseInt(rev, 10, 64)
-			if !ok || err != nil || !strings.HasPrefix(family, familyPrefix) {
-				continue
-			}
-			latest[family] = max(latest[family], n)
-		}
-		if resp.Next == "" {
-			return latest, nil
-		}
-		next = resp.Next
-	}
-}
-
-type ecsTaskDefinition struct {
-	Definition struct {
-		Family   string `json:"family"`
-		Revision int64  `json:"revision"`
-		Status   string `json:"status"`
-	} `json:"taskDefinition"`
-	Tags []ecsTag `json:"tags"`
-}
-
-func describeTaskDefinition(c *client, td string) (ecsTaskDefinition, error) {
-	var resp ecsTaskDefinition
-	err := c.call(APIECS, "DescribeTaskDefinition", map[string]any{"taskDefinition": td, "include": []string{"TAGS"}}, &resp)
-	return resp, err
-}
-
-func (taskDefinitionKind) list(c *client) ([]object, error) {
-	latest, err := latestTaskDefinitions(c)
-	if err != nil {
-		return nil, err
-	}
-	var out []object
-	for _, family := range slices.Sorted(maps.Keys(latest)) {
-		td := fmt.Sprintf("%s:%d", family, latest[family])
-		d, err := describeTaskDefinition(c, td)
-		if err != nil {
-			return nil, err
-		}
-		if ecsTagOf(d.Tags, TagName) == "" {
-			continue
-		}
-		out = append(out, object{Name: ecsTagOf(d.Tags, TagName), Boundary: ecsTagOf(d.Tags, TagBoundary),
-			IDs:   map[string]string{"family": family, "taskDefinition": td},
-			State: taskDefinitionState{Revision: latest[family], Digest: ecsTagOf(d.Tags, TagDigest)}})
-	}
-	return out, nil
-}
-
-func (taskDefinitionKind) missing(*client, protocol.Resource) (any, error) { return nil, nil }
-
-// register is the RegisterTaskDefinition of a declaration, with the digest it is tagged with.
-func register(r protocol.Resource, s taskDefinitionSpec, deps map[string]protocol.Observed) (protocol.Approved, string, error) {
-	var mode string
-	switch s.Launch {
-	case LaunchFargate:
-		mode = "awsvpc"
-	case LaunchEC2:
-		mode = "bridge"
-	default:
-		return protocol.Approved{}, "", fmt.Errorf("launch %q is FARGATE (Fargate and Fargate Spot) or EC2", s.Launch)
-	}
-	if len(s.Containers) == 0 {
-		return protocol.Approved{}, "", fmt.Errorf("a task definition has containers")
-	}
-	if s.LogGroup != "" && s.ExecutionRole == "" {
-		return protocol.Approved{}, "", fmt.Errorf("logs to %s need an executionRole (ecs-tasks, ecs-task-execution) to write them", s.LogGroup)
-	}
-	var defs []map[string]any
-	for _, ct := range s.Containers {
-		d := map[string]any{"name": ct.Name, "image": ct.Image, "essential": true}
-		if len(ct.Command) > 0 {
-			d["command"] = ct.Command
-		}
-		var env []map[string]string
-		for _, e := range ct.Environment {
-			v := e.Value
-			if e.InstanceIP != "" {
-				inst, err := dep(deps, KindInstance, e.InstanceIP)
-				if err != nil {
-					return protocol.Approved{}, "", err
-				}
-				ip := state[instanceState](inst).PrivateIP
-				if ip == "" {
-					return protocol.Approved{}, "", fmt.Errorf("%s %s has no private IP address yet (it is %s)", KindInstance, e.InstanceIP, state[instanceState](inst).State)
-				}
-				v = e.Prefix + ip
-			}
-			env = append(env, map[string]string{"name": e.Name, "value": v})
-		}
-		if len(env) > 0 {
-			d["environment"] = env
-		}
-		var ports []map[string]any
-		for _, p := range ct.Ports {
-			m := map[string]any{"containerPort": p.Container, "protocol": "tcp"}
-			if p.Host != 0 {
-				m["hostPort"] = p.Host
-			}
-			ports = append(ports, m)
-		}
-		if len(ports) > 0 {
-			d["portMappings"] = ports
-		}
-		if ct.MemoryMiB > 0 {
-			d["memory"] = ct.MemoryMiB
-		}
-		if s.LogGroup != "" {
-			lg, err := dep(deps, KindLogGroup, s.LogGroup)
-			if err != nil {
-				return protocol.Approved{}, "", err
-			}
-			d["logConfiguration"] = map[string]any{"logDriver": "awslogs", "options": map[string]string{
-				"awslogs-group": lg.IDs["logGroupName"], "awslogs-region": state[logGroupState](lg).Region, "awslogs-stream-prefix": r.Name}}
-		}
-		defs = append(defs, d)
-	}
-	members := map[string]any{"family": Family(s.Boundary, r.Name), "containerDefinitions": defs, "cpu": strconv.FormatInt(s.CPU, 10),
-		"memory": strconv.FormatInt(s.MemoryMiB, 10), "networkMode": mode, "requiresCompatibilities": []string{s.Launch}}
-	if s.ExecutionRole != "" {
-		role, err := dep(deps, KindIAMRole, s.ExecutionRole)
-		if err != nil {
-			return protocol.Approved{}, "", err
-		}
-		members["executionRoleArn"] = state[roleState](role).Arn
-	}
-	text, err := json.Marshal(members, json.Deterministic(true))
-	if err != nil {
-		return protocol.Approved{}, "", err
-	}
-	sum := sha256.Sum256(text)
-	digest := hex.EncodeToString(sum[:12])
-	members["tags"] = ecsTagsWith(s.Boundary, r.Name, [2]string{TagDigest, digest})
-	return jsonReq(APIECS, "RegisterTaskDefinition", members), digest, nil
-}
-
-func (taskDefinitionKind) diff(r protocol.Resource, o protocol.Observed, deps map[string]protocol.Observed) ([]protocol.Change, error) {
-	s, err := spec[taskDefinitionSpec](r)
-	if err != nil {
-		return nil, err
-	}
-	a, digest, err := register(r, s, deps)
-	if err != nil {
-		return nil, err
-	}
-	family := Family(s.Boundary, r.Name)
-	what := fmt.Sprintf("%s, %d CPU units, %d MiB, %d containers (digest %s)", s.Launch, s.CPU, s.MemoryMiB, len(s.Containers), digest)
-	if !o.Exists {
-		return []protocol.Change{{Resource: r.ID, Kind: KindTaskDefinition, Op: OpCreate, IDs: map[string]string{"mamela-name": r.Name, "family": family},
-			Reasons: []string{"task definition " + family + ": " + what}, Requests: []protocol.Approved{a}}}, nil
-	}
-	st := state[taskDefinitionState](o)
-	if st.Digest == digest {
+func (clusterKind) find(c *client, ids map[string]string) (*object, error) {
+	if ids["cluster"] == "" {
 		return nil, nil
 	}
-	old := o.IDs["taskDefinition"]
-	return []protocol.Change{{Resource: r.ID, Kind: KindTaskDefinition, Op: OpRevise, IDs: map[string]string{"family": family, "taskDefinition": old},
-		Reasons:  []string{fmt.Sprintf("revision %d was registered with digest %s: register a new one (%s) and deregister it", st.Revision, st.Digest, what)},
-		Requests: []protocol.Approved{a, jsonReq(APIECS, "DeregisterTaskDefinition", map[string]any{"taskDefinition": old})}}}, nil
-}
-
-func (taskDefinitionKind) remove(o protocol.Observed) (protocol.Change, error) {
-	td := o.IDs["taskDefinition"]
-	return protocol.Change{Resource: o.ID, Kind: KindTaskDefinition, Op: OpDelete, IDs: map[string]string{"taskDefinition": td},
-		Reasons:  []string{"deregister " + td + " (ECS keeps it as INACTIVE; a service that uses it keeps running)"},
-		Requests: []protocol.Approved{jsonReq(APIECS, "DeregisterTaskDefinition", map[string]any{"taskDefinition": td})}}, nil
-}
-
-// digestOf is the digest an approved RegisterTaskDefinition is tagged with.
-func digestOf(a protocol.Approved) string {
-	var tags []ecsTag
-	if v := a.Params["tags"]; len(v) == 1 {
-		json.Unmarshal([]byte(v[0]), &tags)
+	got, err := describeClustersOf(c, []string{ids["cluster"]})
+	if err != nil || len(got) != 1 || got[0].Status != "ACTIVE" {
+		return nil, err
 	}
-	return ecsTagOf(tags, TagDigest)
+	o := clusterObject(got[0])
+	return &o, nil
 }
 
-func (k taskDefinitionKind) done(c *client, _ protocol.Change, a protocol.Approved) (bool, error) {
-	switch action(a) {
-	case "RegisterTaskDefinition":
-		objs, err := k.list(c)
-		if err != nil {
-			return false, err
-		}
-		return slices.ContainsFunc(objs, func(x object) bool {
-			return x.IDs["family"] == param(a, "family") && x.State.(taskDefinitionState).Digest == digestOf(a)
-		}), nil
-	case "DeregisterTaskDefinition":
-		d, err := describeTaskDefinition(c, param(a, "taskDefinition"))
-		if notFound(err) {
-			return true, nil
-		}
-		if err != nil {
-			return false, err
-		}
-		return d.Definition.Status != "ACTIVE", nil
-	}
-	return false, nil
+func (clusterKind) adopt(o protocol.Observed, desired protocol.Resource) (protocol.Change, error) {
+	return tagChangeECS(o, desired, map[string]string{"cluster": o.IDs["cluster"]}, "ECS cluster "+o.IDs["cluster"])
 }
 
 // --- service ----------------------------------------------------------------------------------
@@ -490,14 +320,14 @@ func (k taskDefinitionKind) done(c *client, _ protocol.Change, a protocol.Approv
 type serviceKind struct{}
 
 type serviceSpec struct {
-	Boundary       string `json:"boundary"`
-	Cluster        string `json:"cluster"`
-	TaskDefinition string `json:"taskDefinition"`
-	Count          int64  `json:"count"`
-	Launch         string `json:"launch"`                  // EC2, FARGATE or FARGATE_SPOT
-	Subnet         string `json:"subnet,omitempty"`        // Fargate: the subnet of its tasks
-	SecurityGroup  string `json:"securityGroup,omitempty"` // Fargate: their security group
-	PublicIP       bool   `json:"publicIp,omitempty"`      // Fargate: a public IP address (to pull images without a NAT)
+	Boundary       string `json:"boundary" doc:"the boundary (the guard's): it tags the service"`
+	Cluster        string `json:"cluster" mamela:"ref=AwsEcsCluster"`
+	TaskDefinition string `json:"taskDefinition" mamela:"ref=AwsEcsTaskDefinition" doc:"its tasks' definition (the latest revision)"`
+	Count          int64  `json:"count" doc:"how many tasks it keeps running (0: a service to run one-off tasks with run-task)"`
+	Launch         string `json:"launch" doc:"where its tasks run: EC2 (the cluster's container instances), FARGATE or FARGATE_SPOT"`
+	Subnet         string `json:"subnet,omitempty" mamela:"ref=AwsSubnet" doc:"Fargate: the subnet of its tasks"`
+	SecurityGroup  string `json:"securityGroup,omitempty" mamela:"ref=AwsSecurityGroup" doc:"Fargate: their security group"`
+	PublicIP       bool   `json:"publicIp,omitzero" doc:"Fargate: a public IP address (to pull images without a NAT gateway)"`
 }
 
 type serviceState struct {
@@ -521,6 +351,7 @@ type taskRun struct {
 }
 
 type ecsService struct {
+	Arn            string `json:"serviceArn"`
 	Name           string `json:"serviceName"`
 	Status         string `json:"status"`
 	Desired        int64  `json:"desiredCount"`
@@ -553,8 +384,12 @@ func (serviceKind) reads() []protocol.Call {
 }
 func (serviceKind) operations() []protocol.Operation {
 	return []protocol.Operation{op(OpCreate, createService), op(OpUpdate, updateService),
-		unsupportedOp(OpReplace, "a service keeps how it runs its tasks (launch, subnet, security group): declare a new one"),
-		explicitOp(OpRunTask, runTask), deleteOp(deleteService)}
+		unsupportedOp(OpReplace, "a service keeps its cluster, and whether its tasks run on EC2 or on Fargate: declare a new one"),
+		explicitOp(OpRunTask, runTask), deleteOp(deleteService), adoptOp(tagECS)}
+}
+func (serviceKind) spec() any { return serviceSpec{} }
+func (serviceKind) doc() string {
+	return "An ECS service that keeps count tasks of a task definition running. With 0 tasks, it is a way to run one-off tasks: `mamela act --confirm <name> run-task` runs one, as the service would."
 }
 
 // pages lists with a JSON API's nextToken.
@@ -615,6 +450,31 @@ func runsOf(c *client, cluster string) (map[[2]string][]taskRun, error) {
 	return out, nil
 }
 
+// describeServicesOf describes services of a cluster (with their tags).
+func describeServicesOf(c *client, cluster string, refs []string) ([]ecsService, error) {
+	var out []ecsService
+	for chunk := range slices.Chunk(refs, 10) {
+		var resp struct {
+			Services []ecsService `json:"services"`
+		}
+		if err := c.call(APIECS, "DescribeServices", map[string]any{"cluster": cluster, "services": chunk, "include": []string{"TAGS"}}, &resp); err != nil {
+			return nil, err
+		}
+		out = append(out, resp.Services...)
+	}
+	return out, nil
+}
+
+func serviceObject(cluster string, s ecsService, runs []taskRun) object {
+	name, boundary := ecsTagOf(s.Tags, TagName), ecsTagOf(s.Tags, TagBoundary)
+	st := serviceState{Boundary: boundary, TaskDefinition: lastPart(s.TaskDefinition), Count: s.Desired, Running: s.Running, Status: s.Status,
+		Launch: s.LaunchType, Subnets: s.Network.Awsvpc.Subnets, Groups: s.Network.Awsvpc.Groups, PublicIP: s.Network.Awsvpc.PublicIP == "ENABLED", Runs: runs}
+	if st.Launch == "" && len(s.Strategy) > 0 {
+		st.Launch = s.Strategy[0].Provider
+	}
+	return object{Name: name, Boundary: boundary, IDs: map[string]string{"cluster": cluster, "service": s.Name, "resourceArn": s.Arn}, State: st}
+}
+
 func (serviceKind) list(c *client) ([]object, error) {
 	clusters, err := clusterKind{}.list(c)
 	if err != nil {
@@ -632,26 +492,16 @@ func (serviceKind) list(c *client) ([]object, error) {
 			return nil, err
 		}
 		slices.Sort(arns)
-		for chunk := range slices.Chunk(arns, 10) {
-			var resp struct {
-				Services []ecsService `json:"services"`
+		services, err := describeServicesOf(c, cluster, arns)
+		if err != nil {
+			return nil, err
+		}
+		for _, s := range services {
+			name, boundary := ecsTagOf(s.Tags, TagName), ecsTagOf(s.Tags, TagBoundary)
+			if name == "" || s.Status == "INACTIVE" {
+				continue
 			}
-			if err := c.call(APIECS, "DescribeServices", map[string]any{"cluster": cluster, "services": chunk, "include": []string{"TAGS"}}, &resp); err != nil {
-				return nil, err
-			}
-			for _, s := range resp.Services {
-				name, boundary := ecsTagOf(s.Tags, TagName), ecsTagOf(s.Tags, TagBoundary)
-				if name == "" || s.Status == "INACTIVE" {
-					continue
-				}
-				st := serviceState{Boundary: boundary, TaskDefinition: lastPart(s.TaskDefinition), Count: s.Desired, Running: s.Running, Status: s.Status,
-					Launch: s.LaunchType, Subnets: s.Network.Awsvpc.Subnets, Groups: s.Network.Awsvpc.Groups, PublicIP: s.Network.Awsvpc.PublicIP == "ENABLED",
-					Runs: runs[[2]string{boundary, name}]}
-				if st.Launch == "" && len(s.Strategy) > 0 {
-					st.Launch = s.Strategy[0].Provider
-				}
-				out = append(out, object{Name: name, Boundary: boundary, IDs: map[string]string{"cluster": cluster, "service": s.Name}, State: st})
-			}
+			out = append(out, serviceObject(cluster, s, runs[[2]string{boundary, name}]))
 		}
 	}
 	return out, nil
@@ -664,24 +514,30 @@ func launchMembers(m map[string]any, launch string, subnets, groups []string, pu
 	if launch == LaunchEC2 {
 		m["launchType"] = LaunchEC2
 	} else {
-		m["capacityProviderStrategy"] = []map[string]any{{"capacityProvider": launch, "weight": 1}}
+		m["capacityProviderStrategy"] = strategy(launch)
 	}
 	if len(subnets) > 0 {
-		ip := "DISABLED"
-		if publicIP {
-			ip = "ENABLED"
-		}
-		m["networkConfiguration"] = map[string]any{"awsvpcConfiguration": map[string]any{"subnets": subnets, "securityGroups": groups, "assignPublicIp": ip}}
+		m["networkConfiguration"] = network(subnets, groups, publicIP)
 	}
 }
+
+func strategy(launch string) []map[string]any {
+	return []map[string]any{{"capacityProvider": launch, "weight": 1}}
+}
+
+func network(subnets, groups []string, publicIP bool) map[string]any {
+	ip := "DISABLED"
+	if publicIP {
+		ip = "ENABLED"
+	}
+	return map[string]any{"awsvpcConfiguration": map[string]any{"subnets": subnets, "securityGroups": groups, "assignPublicIp": ip}}
+}
+
+func fargate(launch string) bool { return launch == LaunchFargate || launch == LaunchFargateSpot }
 
 func (serviceKind) diff(r protocol.Resource, o protocol.Observed, deps map[string]protocol.Observed) ([]protocol.Change, error) {
 	s, err := spec[serviceSpec](r)
 	if err != nil {
-		return nil, err
-	}
-	name := awsName(s.Boundary, r.Name)
-	if err := checkName(name); err != nil {
 		return nil, err
 	}
 	cl, err := dep(deps, KindCluster, s.Cluster)
@@ -716,6 +572,10 @@ func (serviceKind) diff(r protocol.Resource, o protocol.Observed, deps map[strin
 	}
 	cluster, taskDef := cl.IDs["cluster"], td.IDs["taskDefinition"]
 	if !o.Exists {
+		name := awsName(s.Boundary, r.Name)
+		if err := checkName(name); err != nil {
+			return nil, err
+		}
 		m := map[string]any{"cluster": cluster, "serviceName": name, "taskDefinition": taskDef, "desiredCount": s.Count,
 			// One task at a time: on EC2 a task holds the instance's port until it stops.
 			"deploymentConfiguration": map[string]any{"minimumHealthyPercent": 0, "maximumPercent": 100},
@@ -727,14 +587,11 @@ func (serviceKind) diff(r protocol.Resource, o protocol.Observed, deps map[strin
 	}
 	st := state[serviceState](o)
 	ids := map[string]string{"cluster": o.IDs["cluster"], "service": o.IDs["service"]}
-	if st.Launch != s.Launch || !slices.Equal(st.Subnets, subnets) || !slices.Equal(st.Groups, groups) || st.PublicIP != s.PublicIP || o.IDs["cluster"] != cluster {
+	if o.IDs["cluster"] != cluster || (st.Launch == LaunchEC2) != (s.Launch == LaunchEC2) {
 		return []protocol.Change{unsupported(r, KindService, OpReplace, ids,
-			fmt.Sprintf("runs on %s in %s (subnets %v, groups %v, public IP %t); declared %s in %s (%v, %v, %t)",
-				st.Launch, o.IDs["cluster"], st.Subnets, st.Groups, st.PublicIP, s.Launch, cluster, subnets, groups, s.PublicIP))}, nil
+			fmt.Sprintf("runs on %s in cluster %s; declared %s in cluster %s", st.Launch, o.IDs["cluster"], s.Launch, cluster))}, nil
 	}
-	if st.Count == s.Count && st.TaskDefinition == taskDef {
-		return nil, nil
-	}
+	m := map[string]any{"cluster": ids["cluster"], "service": ids["service"], "desiredCount": s.Count, "taskDefinition": taskDef}
 	var why []string
 	if st.Count != s.Count {
 		why = append(why, fmt.Sprintf("%d tasks, not %d", s.Count, st.Count))
@@ -742,9 +599,22 @@ func (serviceKind) diff(r protocol.Resource, o protocol.Observed, deps map[strin
 	if st.TaskDefinition != taskDef {
 		why = append(why, fmt.Sprintf("task definition %s, not %s", taskDef, st.TaskDefinition))
 	}
+	if fargate(s.Launch) {
+		if st.Launch != s.Launch {
+			m["capacityProviderStrategy"], m["forceNewDeployment"] = strategy(s.Launch), true
+			why = append(why, fmt.Sprintf("its tasks on %s, not %s (a new deployment replaces them)", s.Launch, st.Launch))
+		}
+		if !slices.Equal(st.Subnets, subnets) || !slices.Equal(st.Groups, groups) || st.PublicIP != s.PublicIP {
+			m["networkConfiguration"], m["forceNewDeployment"] = network(subnets, groups, s.PublicIP), true
+			why = append(why, fmt.Sprintf("its tasks in subnets %v with groups %v and public IP %t, not %v, %v and %t (a new deployment replaces them)",
+				subnets, groups, s.PublicIP, st.Subnets, st.Groups, st.PublicIP))
+		}
+	}
+	if len(why) == 0 {
+		return nil, nil
+	}
 	return []protocol.Change{{Resource: r.ID, Kind: KindService, Op: OpUpdate, IDs: ids, Reasons: why,
-		Requests: []protocol.Approved{jsonReq(APIECS, "UpdateService", map[string]any{"cluster": ids["cluster"], "service": ids["service"],
-			"desiredCount": s.Count, "taskDefinition": taskDef})}}}, nil
+		Requests: []protocol.Approved{jsonReq(APIECS, "UpdateService", m)}}}, nil
 }
 
 func (serviceKind) remove(o protocol.Observed) (protocol.Change, error) {
@@ -767,11 +637,11 @@ func runToken(o protocol.Observed, runs []taskRun) string {
 	return "mamela-" + hex.EncodeToString(sum[:12])
 }
 
-// runTaskChange is run-task: one task of the service's task definition, run the way the service
-// runs them, tagged with a token that tells it apart.
-func runTaskChange(o protocol.Observed) (protocol.Change, error) {
-	if o.Kind != KindService {
-		return protocol.Change{}, fmt.Errorf("%s is not an explicit operation of %s", OpRunTask, o.Kind)
+// prepare: run-task, one task of the service's task definition, run the way the service runs
+// them, tagged with a token that tells it apart.
+func (serviceKind) prepare(op protocol.Op, o protocol.Observed, _ *protocol.Resource) (protocol.Change, error) {
+	if op != OpRunTask {
+		return protocol.Change{}, fmt.Errorf("%s is not an explicit operation of %s", op, o.Kind)
 	}
 	st := state[serviceState](o)
 	if st.Status != "ACTIVE" || st.TaskDefinition == "" {
@@ -807,7 +677,28 @@ func (k serviceKind) done(c *client, _ protocol.Change, a protocol.Approved) (bo
 		return ok, nil
 	case "UpdateService":
 		st, ok := find(param(a, "service"))
-		return ok && strconv.FormatInt(st.Count, 10) == param(a, "desiredCount") && st.TaskDefinition == param(a, "taskDefinition"), nil
+		if !ok || strconv.FormatInt(st.Count, 10) != param(a, "desiredCount") || st.TaskDefinition != param(a, "taskDefinition") {
+			return false, nil
+		}
+		if v := a.Params["capacityProviderStrategy"]; len(v) == 1 {
+			var s []struct {
+				Provider string `json:"capacityProvider"`
+			}
+			if json.Unmarshal([]byte(v[0]), &s) != nil || len(s) != 1 || s[0].Provider != st.Launch {
+				return false, nil
+			}
+		}
+		if v := a.Params["networkConfiguration"]; len(v) == 1 {
+			var n ecsService
+			if json.Unmarshal([]byte(`{"networkConfiguration":`+v[0]+`}`), &n) != nil {
+				return false, nil
+			}
+			w := n.Network.Awsvpc
+			if !slices.Equal(w.Subnets, st.Subnets) || !slices.Equal(w.Groups, st.Groups) || (w.PublicIP == "ENABLED") != st.PublicIP {
+				return false, nil
+			}
+		}
+		return true, nil
 	case "DeleteService":
 		st, ok := find(param(a, "service"))
 		return !ok || st.Status != "ACTIVE", nil
@@ -818,4 +709,127 @@ func (k serviceKind) done(c *client, _ protocol.Change, a protocol.Approved) (bo
 		}), nil
 	}
 	return false, nil
+}
+
+func (serviceKind) imports() []string { return []string{"aws_ecs_service"} }
+
+// tfService are the attributes of a Terraform ECS service.
+type tfService struct {
+	Name           string `json:"name"`
+	Cluster        string `json:"cluster"`
+	TaskDefinition string `json:"task_definition"`
+	DesiredCount   int64  `json:"desired_count"`
+	LaunchType     string `json:"launch_type"`
+	Strategy       []struct {
+		Provider string `json:"capacity_provider"`
+		Weight   int64  `json:"weight"`
+	} `json:"capacity_provider_strategy"`
+	Network []struct {
+		Subnets  []string `json:"subnets"`
+		Groups   []string `json:"security_groups"`
+		PublicIP bool     `json:"assign_public_ip"`
+	} `json:"network_configuration"`
+	LoadBalancers []any  `json:"load_balancer"`
+	Registries    []any  `json:"service_registries"`
+	Scheduling    string `json:"scheduling_strategy"`
+	Controller    []struct {
+		Type string `json:"type"`
+	} `json:"deployment_controller"`
+}
+
+// importObject declares a service as AwsEcsService says one: of an imported cluster and task
+// definition, on EC2 or on Fargate (Spot) in one imported subnet with one imported security group,
+// with neither a load balancer nor service discovery, deployed by ECS. Anything else is left to
+// Terraform, with why.
+func (serviceKind) importObject(o protocol.ImportObject, r kit.Resolver, boundary string) (kit.Imported, error) {
+	var v tfService
+	if err := kit.Values(o, &v); err != nil {
+		return kit.Imported{}, fmt.Errorf("the attributes of %s: %w", o.Address, err)
+	}
+	switch {
+	case v.Name == "" || v.Cluster == "":
+		return kit.Imported{}, kit.Skip("no name or cluster: the state does not say which service it is")
+	case len(v.LoadBalancers) > 0 || len(v.Registries) > 0:
+		return kit.Imported{}, kit.Skip("it is behind a load balancer or in service discovery, which AwsEcsService does not declare: Terraform keeps managing it")
+	case v.Scheduling != "" && v.Scheduling != "REPLICA":
+		return kit.Imported{}, kit.Skip(fmt.Sprintf("its scheduling strategy is %s; AwsEcsService keeps a number of tasks (REPLICA)", v.Scheduling))
+	case len(v.Controller) > 0 && v.Controller[0].Type != "" && v.Controller[0].Type != "ECS":
+		return kit.Imported{}, kit.Skip(fmt.Sprintf("it is deployed by %s; Mamela updates services that ECS deploys", v.Controller[0].Type))
+	}
+	clusterName := lastPart(v.Cluster)
+	cluster, err := referTo(clusterKind{}, r, "aws_ecs_cluster", "cluster "+clusterName, boundary, func(x protocol.ImportObject) bool {
+		var cv struct {
+			ID   string `json:"id"`
+			Name string `json:"name"`
+		}
+		return kit.Values(x, &cv) == nil && (cv.ID == v.Cluster || cv.Name == clusterName)
+	})
+	if err != nil {
+		return kit.Imported{}, err
+	}
+	taskDef, err := referTo(taskDefinitionKind{}, r, "aws_ecs_task_definition", "task definition "+lastPart(v.TaskDefinition), boundary, func(x protocol.ImportObject) bool {
+		var tv struct {
+			Arn      string `json:"arn"`
+			Family   string `json:"family"`
+			Revision int64  `json:"revision"`
+		}
+		return kit.Values(x, &tv) == nil && (tv.Arn == v.TaskDefinition || fmt.Sprintf("%s:%d", tv.Family, tv.Revision) == lastPart(v.TaskDefinition) ||
+			tv.Family == v.TaskDefinition)
+	})
+	if err != nil {
+		return kit.Imported{}, err
+	}
+	s := serviceSpec{Boundary: boundary, Cluster: cluster, TaskDefinition: taskDef, Count: v.DesiredCount}
+	switch {
+	case v.LaunchType == LaunchEC2 || v.LaunchType == LaunchFargate:
+		s.Launch = v.LaunchType
+	case v.LaunchType == "" && len(v.Strategy) == 1 && fargate(v.Strategy[0].Provider):
+		s.Launch = v.Strategy[0].Provider
+	default:
+		return kit.Imported{}, kit.Skip(fmt.Sprintf("it runs its tasks on %q with capacity providers %v; AwsEcsService runs them on EC2, on Fargate or on Fargate Spot", v.LaunchType, v.Strategy))
+	}
+	switch {
+	case s.Launch == LaunchEC2 && len(v.Network) > 0:
+		return kit.Imported{}, kit.Skip("its tasks on EC2 have a network configuration (awsvpc); AwsEcsService's tasks on EC2 use the instance's (bridge)")
+	case s.Launch != LaunchEC2:
+		if len(v.Network) != 1 || len(v.Network[0].Subnets) != 1 || len(v.Network[0].Groups) != 1 {
+			return kit.Imported{}, kit.Skip("its tasks are in several subnets or security groups (or none); AwsEcsService puts them in one subnet with one security group")
+		}
+		n := v.Network[0]
+		if s.Subnet, err = referTo(subnetKind{}, r, "aws_subnet", "subnet "+n.Subnets[0], boundary, idIs(n.Subnets[0])); err != nil {
+			return kit.Imported{}, err
+		}
+		if s.SecurityGroup, err = referTo(groupKind{}, r, "aws_security_group", "security group "+n.Groups[0], boundary, idIs(n.Groups[0])); err != nil {
+			return kit.Imported{}, err
+		}
+		s.PublicIP = n.PublicIP
+	}
+	return kit.Imported{Spec: s, IDs: map[string]string{"cluster": clusterName, "service": v.Name}}, nil
+}
+
+// idIs matches an imported object by its id.
+func idIs(id string) func(protocol.ImportObject) bool {
+	return func(x protocol.ImportObject) bool {
+		var v struct {
+			ID string `json:"id"`
+		}
+		return kit.Values(x, &v) == nil && v.ID == id
+	}
+}
+
+func (serviceKind) find(c *client, ids map[string]string) (*object, error) {
+	if ids["cluster"] == "" || ids["service"] == "" {
+		return nil, nil
+	}
+	got, err := describeServicesOf(c, ids["cluster"], []string{ids["service"]})
+	if err != nil || len(got) != 1 || got[0].Status != "ACTIVE" {
+		return nil, err
+	}
+	o := serviceObject(ids["cluster"], got[0], nil)
+	return &o, nil
+}
+
+func (serviceKind) adopt(o protocol.Observed, desired protocol.Resource) (protocol.Change, error) {
+	return tagChangeECS(o, desired, map[string]string{"cluster": o.IDs["cluster"], "service": o.IDs["service"]},
+		fmt.Sprintf("ECS service %s of cluster %s", o.IDs["service"], o.IDs["cluster"]))
 }

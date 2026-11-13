@@ -10,6 +10,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/ieyoukan/mamela/provider/kit"
 	"github.com/ieyoukan/mamela/provider/protocol"
 )
 
@@ -25,11 +26,20 @@ import (
 //
 // The declaration never writes the script: it names a cluster, or an image and a port, which the
 // provider checks before writing them into it.
+//
+// An instance a person adopts (one Terraform launched) does neither: it keeps its image and user
+// data, which Mamela never compares, and the instance profile of its role, if any. Mamela keeps its
+// type (resize, an explicit operation that stops and starts it), its security group and its
+// running.
 
-// KindInstance is the kind; OpStart starts it when it is stopped.
+// KindInstance is the kind and its operations.
 const (
 	KindInstance protocol.ResourceKind = "AwsInstance"
-	OpStart      protocol.Op           = "start"
+	OpStart      protocol.Op           = "start"  // a stopped instance starts
+	OpGroups     protocol.Op           = "groups" // its security group is the declared one
+	OpRetype     protocol.Op           = "retype" // never carried out by a plan: resize
+	OpResize     protocol.Op           = "resize" // explicit: stop, change the type, start
+	OpReboot     protocol.Op           = "reboot" // explicit
 	// TagSetup is the digest of the user data an instance was launched with.
 	TagSetup = "mamela:setup"
 )
@@ -44,6 +54,9 @@ var (
 		"NetworkInterface.1.AssociatePublicIpAddress", "NetworkInterface.1.SecurityGroupId.1", "TagSpecification.1.Tag.4.Key",
 		"TagSpecification.1.Tag.4.Value"}, ec2TagParams...)...), "MinCount", "1", "MaxCount", "1")
 	startInstances     = queryCall(APIEC2, "StartInstances", "InstanceId.1")
+	stopInstances      = queryCall(APIEC2, "StopInstances", "InstanceId.1")
+	rebootInstances    = queryCall(APIEC2, "RebootInstances", "InstanceId.1")
+	modifyInstance     = queryCall(APIEC2, "ModifyInstanceAttribute", "InstanceId", "InstanceType.Value", "GroupId.1")
 	terminateInstances = queryCall(APIEC2, "TerminateInstances", "InstanceId.1")
 )
 
@@ -52,26 +65,29 @@ type instanceKind struct{}
 // HostContainer is the one container an instance without a cluster runs: Port on the instance to
 // the same port of the container.
 type HostContainer struct {
-	Image string `json:"image"`
-	Port  int64  `json:"port"`
+	Image string `json:"image" doc:"the container image (registry/path:tag)"`
+	Port  int64  `json:"port" doc:"its TCP port, published on the instance"`
 }
 
 type instanceSpec struct {
-	Boundary      string         `json:"boundary"`
-	Subnet        string         `json:"subnet"`
-	SecurityGroup string         `json:"securityGroup"`
-	InstanceType  string         `json:"instanceType"`
-	Cluster       string         `json:"cluster,omitempty"` // with Role: a container instance of the cluster
-	Role          string         `json:"role,omitempty"`
-	Container     *HostContainer `json:"container,omitempty"` // or: this container, and no role
+	Boundary      string         `json:"boundary" doc:"the boundary (the guard's): it tags the instance"`
+	Subnet        string         `json:"subnet" mamela:"ref=AwsSubnet"`
+	SecurityGroup string         `json:"securityGroup" mamela:"ref=AwsSecurityGroup"`
+	InstanceType  string         `json:"instanceType" doc:"its type (the guard's instance_types; resize changes it)"`
+	Cluster       string         `json:"cluster,omitempty" mamela:"ref=AwsEcsCluster" doc:"with role: a container instance of this cluster"`
+	Role          string         `json:"role,omitempty" mamela:"ref=AwsIamRole" doc:"the role (trust ec2) whose instance profile it has"`
+	Container     *HostContainer `json:"container,omitempty" doc:"or: the container it runs, with no role"`
 }
 
 type instanceState struct {
-	State        string `json:"state,omitempty"` // pending, running, stopping or stopped
-	InstanceType string `json:"instanceType,omitempty"`
-	ImageID      string `json:"imageId"`
-	PrivateIP    string `json:"privateIp,omitempty"`
-	Setup        string `json:"setup,omitempty"` // the digest of its user data
+	State        string   `json:"state,omitempty"` // pending, running, stopping or stopped
+	InstanceType string   `json:"instanceType,omitempty"`
+	ImageID      string   `json:"imageId"`
+	PrivateIP    string   `json:"privateIp,omitempty"`
+	Setup        string   `json:"setup,omitempty"` // the digest of its user data
+	Subnet       string   `json:"subnet,omitempty"`
+	Groups       []string `json:"groups,omitempty"`
+	Profile      string   `json:"profile,omitempty"` // its instance profile's name
 	// Generation (of one that does not exist) counts the instances launched for the declaration
 	// that AWS still knows (terminated): their client tokens are spent.
 	Generation int `json:"generation,omitempty"`
@@ -98,6 +114,10 @@ func clientToken(r protocol.Resource, image string, generation int) string {
 // digest characters only.
 var imageName = regexp.MustCompile(`^[a-z0-9][a-z0-9._/-]*(:[A-Za-z0-9._-]+)?(@sha256:[a-f0-9]{64})?$`)
 
+// adopted says whether a declaration is of an instance Mamela did not set up (one a person
+// adopted): it neither joins a cluster nor runs a container.
+func (s instanceSpec) adopted() bool { return s.Cluster == "" && s.Container == nil }
+
 // UserData is the script an instance runs when it first boots: it joins the cluster, or runs the
 // container (the ECS agent of the image is then turned off).
 func UserData(s instanceSpec, cluster string) (string, error) {
@@ -117,7 +137,8 @@ func UserData(s instanceSpec, cluster string) (string, error) {
 		script = "#!/bin/bash\nset -eu\nsystemctl disable --now ecs || true\nsystemctl enable --now docker\n" +
 			"docker run -d --restart always --name mamela -p " + p + ":" + p + " " + c.Image + "\n"
 	default:
-		return "", fmt.Errorf("an instance joins a cluster (cluster and role) or runs a container (container), one of the two")
+		return "", fmt.Errorf("an instance Mamela launches joins a cluster (cluster and role) or runs a container (container), one of the two; " +
+			"one with neither is an instance a person adopted (mamela import terraform)")
 	}
 	return base64.StdEncoding.EncodeToString([]byte(script)), nil
 }
@@ -134,6 +155,9 @@ type ec2Instance struct {
 	PrivateIP   string   `xml:"privateIpAddress"`
 	ClientToken string   `xml:"clientToken"`
 	State       string   `xml:"instanceState>name"`
+	Subnet      string   `xml:"subnetId"`
+	Groups      []string `xml:"groupSet>item>groupId"`
+	Profile     string   `xml:"iamInstanceProfile>arn"`
 	Tags        []xmlTag `xml:"tagSet>item"`
 }
 
@@ -164,12 +188,34 @@ func instances(c *client, params map[string]string) ([]ec2Instance, error) {
 	}
 }
 
+func instanceObject(i ec2Instance) object {
+	ids := map[string]string{"InstanceId.1": i.ID, "InstanceId": i.ID, "ResourceId.1": i.ID}
+	if i.ClientToken != "" {
+		ids["ClientToken"] = i.ClientToken
+	}
+	groups := slices.Sorted(slices.Values(i.Groups))
+	profile := ""
+	if i.Profile != "" {
+		profile = lastPart(i.Profile)
+	}
+	return object{Name: tagOf(i.Tags, TagName), Boundary: tagOf(i.Tags, TagBoundary), IDs: ids,
+		State: instanceState{State: i.State, InstanceType: i.Type, ImageID: i.Image, PrivateIP: i.PrivateIP, Setup: tagOf(i.Tags, TagSetup),
+			Subnet: i.Subnet, Groups: groups, Profile: profile}}
+}
+
 func (instanceKind) kind() protocol.ResourceKind { return KindInstance }
 func (instanceKind) reads() []protocol.Call      { return []protocol.Call{describeInstances, getParameter} }
 func (instanceKind) operations() []protocol.Operation {
-	return []protocol.Operation{op(OpCreate, runInstances), op(OpStart, startInstances),
-		unsupportedOp(OpReplace, "an instance keeps its type and what it was set up to do: declare a new one (and delete this one with mamela act)"),
-		deleteOp(terminateInstances)}
+	return []protocol.Operation{op(OpCreate, runInstances), op(OpStart, startInstances), op(OpGroups, modifyInstance),
+		unsupportedOp(OpRetype, "changing the type stops the instance: a person resizes it with the explicit operation resize (mamela act --confirm <name> resize <resource>)"),
+		unsupportedOp(OpReplace, "an instance keeps its subnet, its role and what it was set up to do: declare a new one (and delete this one with mamela act)"),
+		explicitOp(OpResize, stopInstances, modifyInstance, startInstances), explicitOp(OpReboot, rebootInstances),
+		deleteOp(terminateInstances), adoptOp(createTags)}
+}
+func (instanceKind) spec() any { return instanceSpec{} }
+func (instanceKind) doc() string {
+	return "An EC2 instance of the ECS-optimized Amazon Linux 2023 that joins a cluster (with a role's instance profile) or runs one container; " +
+		"or, adopted, one that keeps its own image and setup. The explicit operations resize and reboot stop or reboot it."
 }
 
 func (instanceKind) list(c *client) ([]object, error) {
@@ -180,9 +226,7 @@ func (instanceKind) list(c *client) ([]object, error) {
 	}
 	var out []object
 	for _, i := range got {
-		out = append(out, object{Name: tagOf(i.Tags, TagName), Boundary: tagOf(i.Tags, TagBoundary),
-			IDs:   map[string]string{"ClientToken": i.ClientToken, "InstanceId.1": i.ID},
-			State: instanceState{State: i.State, InstanceType: i.Type, ImageID: i.Image, PrivateIP: i.PrivateIP, Setup: tagOf(i.Tags, TagSetup)}})
+		out = append(out, instanceObject(i))
 	}
 	return out, nil
 }
@@ -219,11 +263,7 @@ func (instanceKind) diff(r protocol.Resource, o protocol.Observed, deps map[stri
 		return nil, err
 	}
 	cluster, profile, purpose := "", "", ""
-	if s.Cluster != "" {
-		cl, err := dep(deps, KindCluster, s.Cluster)
-		if err != nil {
-			return nil, err
-		}
+	if s.Role != "" {
 		role, err := dep(deps, KindIAMRole, s.Role)
 		if err != nil {
 			return nil, err
@@ -232,28 +272,26 @@ func (instanceKind) diff(r protocol.Resource, o protocol.Observed, deps map[stri
 		if rs := state[roleState](role); profile == "" || !rs.InstanceProfile || rs.Trust != "ec2" {
 			return nil, fmt.Errorf("role %s is not one an instance runs as: declare it with trust ec2 and an instance profile", s.Role)
 		}
-		cluster, purpose = cl.IDs["cluster"], "join cluster "+cl.IDs["cluster"]+" as role "+s.Role
-	} else if s.Container != nil {
-		purpose = fmt.Sprintf("run %s on port %d", s.Container.Image, s.Container.Port)
 	}
-	userData, err := UserData(s, cluster)
-	if err != nil {
-		return nil, err
-	}
-	setup := setupDigest(userData)
-	st := state[instanceState](o)
-	if o.Exists {
-		id := map[string]string{"InstanceId.1": o.IDs["InstanceId.1"]}
-		switch {
-		case st.InstanceType != s.InstanceType:
-			return []protocol.Change{unsupported(r, KindInstance, OpReplace, id, fmt.Sprintf("instance type %s, declared %s", st.InstanceType, s.InstanceType))}, nil
-		case st.Setup != setup:
-			return []protocol.Change{unsupported(r, KindInstance, OpReplace, id, fmt.Sprintf("it was set up as %s, declared %s (%s)", st.Setup, setup, purpose))}, nil
-		case st.State == "stopped":
-			return []protocol.Change{{Resource: r.ID, Kind: KindInstance, Op: OpStart, IDs: id, Reasons: []string{"it is stopped"},
-				Requests: []protocol.Approved{queryReq(APIEC2, "StartInstances", id)}}}, nil
+	switch {
+	case s.Cluster != "":
+		cl, err := dep(deps, KindCluster, s.Cluster)
+		if err != nil {
+			return nil, err
 		}
-		return nil, nil
+		cluster, purpose = cl.IDs["cluster"], "join cluster "+cl.IDs["cluster"]+" as role "+s.Role
+	case s.Container != nil:
+		purpose = fmt.Sprintf("run %s on port %d", s.Container.Image, s.Container.Port)
+	default:
+		purpose = "keep what it was set up to do (adopted)"
+	}
+	setup := ""
+	if !s.adopted() || !o.Exists {
+		userData, err := UserData(s, cluster)
+		if err != nil {
+			return nil, err
+		}
+		setup = setupDigest(userData)
 	}
 	subnet, err := dep(deps, KindSubnet, s.Subnet)
 	if err != nil {
@@ -263,9 +301,35 @@ func (instanceKind) diff(r protocol.Resource, o protocol.Observed, deps map[stri
 	if err != nil {
 		return nil, err
 	}
+	st := state[instanceState](o)
+	if o.Exists {
+		id := o.IDs["InstanceId.1"]
+		ids := map[string]string{"InstanceId.1": id}
+		switch {
+		case st.InstanceType != s.InstanceType:
+			return []protocol.Change{unsupported(r, KindInstance, OpRetype, ids, fmt.Sprintf(
+				"instance type %s, declared %s: a person resizes it (it stops and starts): mamela act --confirm %s %s %q <pome-dir>",
+				st.InstanceType, s.InstanceType, r.Name, OpResize, r.ID))}, nil
+		case !s.adopted() && st.Setup != setup:
+			return []protocol.Change{unsupported(r, KindInstance, OpReplace, ids, fmt.Sprintf("it was set up as %s, declared %s (%s)", st.Setup, setup, purpose))}, nil
+		case st.Subnet != subnet.IDs["SubnetId"]:
+			return []protocol.Change{unsupported(r, KindInstance, OpReplace, ids, fmt.Sprintf("it is in subnet %s, declared %s (%s)", st.Subnet, subnet.IDs["SubnetId"], s.Subnet))}, nil
+		case st.Profile != profile:
+			return []protocol.Change{unsupported(r, KindInstance, OpReplace, ids, fmt.Sprintf("it has instance profile %q, declared %q", st.Profile, profile))}, nil
+		case !slices.Equal(st.Groups, []string{group.IDs["GroupId"]}):
+			return []protocol.Change{{Resource: r.ID, Kind: KindInstance, Op: OpGroups, IDs: map[string]string{"InstanceId": id},
+				Reasons:  []string{fmt.Sprintf("security group %s (%s), not %v", group.IDs["GroupId"], s.SecurityGroup, st.Groups)},
+				Requests: []protocol.Approved{queryReq(APIEC2, "ModifyInstanceAttribute", map[string]string{"InstanceId": id, "GroupId.1": group.IDs["GroupId"]})}}}, nil
+		case st.State == "stopped":
+			return []protocol.Change{{Resource: r.ID, Kind: KindInstance, Op: OpStart, IDs: ids, Reasons: []string{"it is stopped"},
+				Requests: []protocol.Approved{queryReq(APIEC2, "StartInstances", ids)}}}, nil
+		}
+		return nil, nil
+	}
 	if st.ImageID == "" {
 		return nil, fmt.Errorf("the ECS-optimized image was not observed")
 	}
+	userData, _ := UserData(s, cluster)
 	token := clientToken(r, st.ImageID, st.Generation)
 	params := ec2Tags("instance", s.Boundary, r.Name, map[string]string{
 		"MinCount": "1", "MaxCount": "1", "ImageId": st.ImageID, "InstanceType": s.InstanceType, "ClientToken": token,
@@ -290,7 +354,62 @@ func (instanceKind) remove(o protocol.Observed) (protocol.Change, error) {
 		Requests: []protocol.Approved{queryReq(APIEC2, "TerminateInstances", id)}}, nil
 }
 
-func (k instanceKind) done(c *client, _ protocol.Change, a protocol.Approved) (bool, error) {
+// prepare: resize (stop, change the type, start) and reboot.
+func (instanceKind) prepare(op protocol.Op, o protocol.Observed, desired *protocol.Resource) (protocol.Change, error) {
+	id := o.IDs["InstanceId.1"]
+	st := state[instanceState](o)
+	switch op {
+	case OpReboot:
+		if st.State != "running" {
+			return protocol.Change{}, fmt.Errorf("%s is %s: only a running instance reboots", o.ID, st.State)
+		}
+		return protocol.Change{Resource: o.ID, Kind: KindInstance, Op: OpReboot, IDs: map[string]string{"InstanceId.1": id},
+			Reasons:  []string{"reboot instance " + id + ": what runs on it is interrupted (a reboot leaves no trace: after a lost answer, Mamela cannot tell whether it rebooted)"},
+			Requests: []protocol.Approved{queryReq(APIEC2, "RebootInstances", map[string]string{"InstanceId.1": id})}}, nil
+	case OpResize:
+		if desired == nil {
+			return protocol.Change{}, fmt.Errorf("%s: resize gives it the declared type, and it is not declared", o.ID)
+		}
+		s, err := spec[instanceSpec](*desired)
+		if err != nil {
+			return protocol.Change{}, err
+		}
+		if s.InstanceType == st.InstanceType {
+			return protocol.Change{}, fmt.Errorf("%s is %s already, as declared", o.ID, st.InstanceType)
+		}
+		ch := protocol.Change{Resource: o.ID, Kind: KindInstance, Op: OpResize, IDs: map[string]string{"InstanceId.1": id, "InstanceId": id}}
+		modify := queryReq(APIEC2, "ModifyInstanceAttribute", map[string]string{"InstanceId": id, "InstanceType.Value": s.InstanceType})
+		switch st.State {
+		case "running":
+			ch.Reasons = []string{fmt.Sprintf("resize instance %s from %s to %s: it stops, its type changes, and it starts again "+
+				"(what runs on it is interrupted; its public IP address changes)", id, st.InstanceType, s.InstanceType)}
+			ch.Requests = []protocol.Approved{queryReq(APIEC2, "StopInstances", map[string]string{"InstanceId.1": id}), modify,
+				queryReq(APIEC2, "StartInstances", map[string]string{"InstanceId.1": id})}
+		case "stopped":
+			ch.Reasons = []string{fmt.Sprintf("resize stopped instance %s from %s to %s (a plan then starts it)", id, st.InstanceType, s.InstanceType)}
+			ch.Requests = []protocol.Approved{modify}
+		default:
+			return protocol.Change{}, fmt.Errorf("%s is %s: resize it once it is running or stopped", o.ID, st.State)
+		}
+		return ch, nil
+	}
+	return protocol.Change{}, fmt.Errorf("%s is not an explicit operation of %s", op, KindInstance)
+}
+
+// resizeTo is the type a resize changes an instance to ("" for another change).
+func resizeTo(ch protocol.Change) string {
+	if ch.Op != OpResize {
+		return ""
+	}
+	for _, a := range ch.Requests {
+		if t := param(a, "InstanceType.Value"); t != "" {
+			return t
+		}
+	}
+	return ""
+}
+
+func (k instanceKind) done(c *client, ch protocol.Change, a protocol.Approved) (bool, error) {
 	objs, err := k.list(c)
 	if err != nil {
 		return false, err
@@ -302,15 +421,109 @@ func (k instanceKind) done(c *client, _ protocol.Change, a protocol.Approved) (b
 		}
 		return objs[i].State.(instanceState), true
 	}
+	up := func(st instanceState) bool { return st.State == "running" || st.State == "pending" }
+	target := resizeTo(ch)
 	switch action(a) {
 	case "RunInstances":
 		return slices.ContainsFunc(objs, func(x object) bool { return x.IDs["ClientToken"] == param(a, "ClientToken") }), nil
 	case "StartInstances":
 		st, ok := byID(param(a, "InstanceId.1"))
-		return ok && (st.State == "running" || st.State == "pending"), nil
+		return ok && up(st) && (target == "" || st.InstanceType == target), nil
+	case "StopInstances": // of a resize: stopped, or past it (the new type)
+		st, ok := byID(param(a, "InstanceId.1"))
+		return ok && (st.State == "stopped" || target != "" && st.InstanceType == target), nil
+	case "ModifyInstanceAttribute":
+		st, ok := byID(param(a, "InstanceId"))
+		if t := param(a, "InstanceType.Value"); t != "" {
+			return ok && st.InstanceType == t, nil
+		}
+		return ok && slices.Equal(st.Groups, []string{param(a, "GroupId.1")}), nil
 	case "TerminateInstances":
 		_, ok := byID(param(a, "InstanceId.1"))
 		return !ok, nil
 	}
-	return false, nil
+	return false, nil // a reboot leaves no trace
+}
+
+// --- import and adopt ---
+
+func (instanceKind) imports() []string { return []string{"aws_instance"} }
+
+// importObject declares an instance Terraform launched as one Mamela adopts: it keeps its image
+// and setup; Mamela keeps its type, its one security group (imported) in its subnet (imported),
+// and its running. An instance profile must be of an imported role (trust ec2), whose profile it
+// is; any other instance is left to Terraform.
+func (instanceKind) importObject(o protocol.ImportObject, r kit.Resolver, boundary string) (kit.Imported, error) {
+	var v struct {
+		ID      string   `json:"id"`
+		Type    string   `json:"instance_type"`
+		Subnet  string   `json:"subnet_id"`
+		Groups  []string `json:"vpc_security_group_ids"`
+		Profile string   `json:"iam_instance_profile"`
+		State   string   `json:"instance_state"`
+	}
+	if err := kit.Values(o, &v); err != nil {
+		return kit.Imported{}, fmt.Errorf("the attributes of %s: %w", o.Address, err)
+	}
+	switch {
+	case v.ID == "":
+		return kit.Imported{}, kit.Skip("no id: the state does not say which instance it is")
+	case v.State == "terminated" || v.State == "shutting-down":
+		return kit.Imported{}, kit.Skip("it is " + v.State)
+	case len(v.Groups) != 1:
+		return kit.Imported{}, kit.Skip(fmt.Sprintf("it has %d security groups (vpc_security_group_ids); AwsInstance has one", len(v.Groups)))
+	}
+	s := instanceSpec{Boundary: boundary, InstanceType: v.Type}
+	var err error
+	if s.Subnet, err = referTo(subnetKind{}, r, "aws_subnet", "subnet "+v.Subnet, boundary, idIs(v.Subnet)); err != nil {
+		return kit.Imported{}, err
+	}
+	if s.SecurityGroup, err = referTo(groupKind{}, r, "aws_security_group", "security group "+v.Groups[0], boundary, idIs(v.Groups[0])); err != nil {
+		return kit.Imported{}, err
+	}
+	if v.Profile != "" {
+		role := ""
+		for _, x := range r.Objects("aws_iam_instance_profile") {
+			if pv, err := roleValues(x); err == nil && pv.Name == v.Profile {
+				role = pv.Role
+			}
+		}
+		if role == "" {
+			return kit.Imported{}, kit.Skip(fmt.Sprintf("its instance profile %s is not in the state: Mamela adopts an instance only with the profile of a role it adopts too", v.Profile))
+		}
+		if s.Role, err = referTo(roleKind{}, r, "aws_iam_role", "role "+role, boundary, func(x protocol.ImportObject) bool {
+			rv, err := roleValues(x)
+			return err == nil && rv.Name == role
+		}); err != nil {
+			return kit.Imported{}, err
+		}
+		var rs roleSpec
+		for _, x := range r.Objects("aws_iam_role") {
+			if x.Name == s.Role {
+				im, _ := roleKind{}.importObject(x, r, boundary)
+				rs, _ = im.Spec.(roleSpec)
+			}
+		}
+		if rs.Trust != "ec2" || !rs.InstanceProfile {
+			return kit.Imported{}, kit.Skip(fmt.Sprintf("its role %s is not one an instance runs as (trust ec2, an instance profile of its name)", role))
+		}
+	}
+	return kit.Imported{Spec: s, IDs: map[string]string{"InstanceId.1": v.ID}}, nil
+}
+
+func (instanceKind) find(c *client, ids map[string]string) (*object, error) {
+	id := ids["InstanceId.1"]
+	if id == "" {
+		return nil, nil
+	}
+	got, err := instances(c, map[string]string{"Filter.1.Name": "instance-id", "Filter.1.Value.1": id})
+	if err != nil || len(got) != 1 || got[0].State == "terminated" || got[0].State == "shutting-down" {
+		return nil, err
+	}
+	o := instanceObject(got[0])
+	return &o, nil
+}
+
+func (instanceKind) adopt(o protocol.Observed, desired protocol.Resource) (protocol.Change, error) {
+	return tagChange(o, desired, "InstanceId.1")
 }

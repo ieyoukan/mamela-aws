@@ -67,14 +67,23 @@ func (a *API) findCluster(nameOrArn string) *cluster {
 	return nil
 }
 
+// findTaskDef finds a task definition by family:revision (or its ARN), or a family's latest
+// active revision.
 func (a *API) findTaskDef(ref string) *taskDef {
-	family, rev, _ := strings.Cut(lastPart(ref), ":")
+	family, rev, hasRev := strings.Cut(lastPart(ref), ":")
+	var latest *taskDef
 	for _, t := range a.taskDefs {
-		if t.family == family && strconv.FormatInt(t.revision, 10) == rev {
+		if t.family != family {
+			continue
+		}
+		if hasRev && strconv.FormatInt(t.revision, 10) == rev {
 			return t
 		}
+		if !hasRev && t.status == "ACTIVE" && (latest == nil || t.revision > latest.revision) {
+			latest = t
+		}
 	}
-	return nil
+	return latest
 }
 
 func (a *API) findService(cl, name string) *service {
@@ -241,7 +250,13 @@ func (a *API) ecs(act string, in map[string]any) (any, error) {
 				rev = max(rev, x.revision+1)
 			}
 		}
-		a.taskDefs = append(a.taskDefs, &taskDef{family: family, revision: rev, status: "ACTIVE", tags: t, compatible: compat})
+		content := map[string]any{}
+		for k, v := range in {
+			if k != "family" && k != "tags" {
+				content[k] = v
+			}
+		}
+		a.taskDefs = append(a.taskDefs, &taskDef{family: family, revision: rev, status: "ACTIVE", tags: t, compatible: compat, content: content})
 		return map[string]any{"taskDefinition": map[string]any{"family": family, "revision": rev}}, nil
 	case "ListTaskDefinitions":
 		var arns []string
@@ -256,8 +271,7 @@ func (a *API) ecs(act string, in map[string]any) (any, error) {
 		if t == nil {
 			return nil, fail(400, "ClientException", "Unable to describe task definition.")
 		}
-		out := map[string]any{"taskDefinition": map[string]any{"family": t.family, "revision": t.revision, "status": t.status,
-			"taskDefinitionArn": ecsArn("task-definition", fmt.Sprintf("%s:%d", t.family, t.revision))}}
+		out := map[string]any{"taskDefinition": t.describe()}
 		if slices.Contains(strs(in, "include"), "TAGS") {
 			out["tags"] = t.tags
 		}
@@ -361,6 +375,40 @@ func (a *API) ecs(act string, in map[string]any) (any, error) {
 			out = append(out, m)
 		}
 		return map[string]any{"services": out, "failures": []any{}}, nil
+	case "TagResource":
+		arn := str(in, "resourceArn")
+		t, err := ecsTags(in)
+		if err != nil || len(t) == 0 {
+			return nil, fail(400, "InvalidParameterException", "tags are {key, value}")
+		}
+		var target *[]map[string]string
+		for _, c := range a.clusters {
+			if c.status == "ACTIVE" && ecsArn("cluster", c.name) == arn {
+				target = &c.tags
+			}
+		}
+		for _, x := range a.services {
+			if x.status == "ACTIVE" && ecsArn("service/"+x.cluster, x.name) == arn {
+				target = &x.tags
+			}
+		}
+		for _, x := range a.taskDefs {
+			if ecsArn("task-definition", fmt.Sprintf("%s:%d", x.family, x.revision)) == arn {
+				target = &x.tags
+			}
+		}
+		if target == nil {
+			return nil, fail(400, "InvalidParameterException", "the specified resource %s does not exist", arn)
+		}
+		for _, kv := range t {
+			i := slices.IndexFunc(*target, func(m map[string]string) bool { return m["key"] == kv["key"] })
+			if i >= 0 {
+				(*target)[i] = kv
+			} else {
+				*target = append(*target, kv)
+			}
+		}
+		return map[string]any{}, nil
 	case "UpdateService", "DeleteService":
 		c, err := clusterOf()
 		if err != nil {
@@ -386,6 +434,26 @@ func (a *API) ecs(act string, in map[string]any) (any, error) {
 				return nil, fail(400, "ClientException", "TaskDefinition not found or not active")
 			}
 			s.taskDef = fmt.Sprintf("%s:%d", td.family, td.revision)
+		}
+		if _, ok := in["capacityProviderStrategy"]; ok {
+			_, strategy, err := a.launchOf(map[string]any{"capacityProviderStrategy": in["capacityProviderStrategy"]})
+			if err != nil {
+				return nil, err
+			}
+			if s.launch == "EC2" {
+				return nil, fail(400, "InvalidParameterException", "a service on EC2 does not move to a capacity provider in the fake")
+			}
+			if b, _ := in["forceNewDeployment"].(bool); !b {
+				return nil, fail(400, "InvalidParameterException", "changing the capacity provider strategy needs forceNewDeployment")
+			}
+			s.launch, s.strategy = "", strategy
+		}
+		if _, ok := in["networkConfiguration"]; ok {
+			network, err := a.checkNetwork(in)
+			if err != nil {
+				return nil, err
+			}
+			s.network = network
 		}
 		return map[string]any{"service": map[string]any{"serviceName": s.name}}, nil
 
@@ -445,4 +513,46 @@ func (a *API) StopTasks(reason string) {
 	for _, t := range a.tasks {
 		t.desired, t.last, t.reason = "STOPPED", "STOPPED", reason
 	}
+}
+
+// describe is a task definition as DescribeTaskDefinition answers it: what was registered, with
+// the defaults ECS fills in.
+func (t *taskDef) describe() map[string]any {
+	out := map[string]any{"family": t.family, "revision": t.revision, "status": t.status,
+		"taskDefinitionArn": ecsArn("task-definition", fmt.Sprintf("%s:%d", t.family, t.revision)),
+		"compatibilities":   []string{"EC2", "FARGATE"}, "requiresAttributes": []any{map[string]any{"name": "com.amazonaws.ecs.capability.logging-driver.awslogs"}},
+		"registeredAt": "2026-11-12T00:00:00Z", "registeredBy": "arn:aws:sts::" + Account + ":assumed-role/operator/session",
+		"volumes": []any{}, "placementConstraints": []any{}}
+	for k, v := range t.content {
+		out[k] = v
+	}
+	awsvpc := t.content["networkMode"] == "awsvpc"
+	var defs []any
+	for _, d := range list(t.content["containerDefinitions"]) {
+		m, _ := d.(map[string]any)
+		c := map[string]any{"cpu": 0, "mountPoints": []any{}, "volumesFrom": []any{}, "systemControls": []any{}, "environment": []any{}, "portMappings": []any{}, "essential": true}
+		for k, v := range m {
+			c[k] = v
+		}
+		var ports []any
+		for _, p := range list(c["portMappings"]) {
+			pm := map[string]any{}
+			for k, v := range p.(map[string]any) {
+				pm[k] = v
+			}
+			if _, ok := pm["hostPort"]; !ok && awsvpc {
+				pm["hostPort"] = pm["containerPort"]
+			}
+			ports = append(ports, pm)
+		}
+		c["portMappings"] = append([]any{}, ports...)
+		defs = append(defs, c)
+	}
+	out["containerDefinitions"] = defs
+	return out
+}
+
+func list(v any) []any {
+	l, _ := v.([]any)
+	return l
 }
