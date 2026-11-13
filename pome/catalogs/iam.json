@@ -49,6 +49,24 @@
     {
       "method": "POST",
       "path": "/",
+      "effect": "change",
+      "form": [
+        "Action",
+        "Version",
+        "RoleName",
+        "Description"
+      ],
+      "fixed": {
+        "Action": "UpdateRole",
+        "Version": "2010-05-08"
+      },
+      "bind": [
+        "RoleName"
+      ]
+    },
+    {
+      "method": "POST",
+      "path": "/",
       "effect": "lose-data",
       "form": [
         "Action",

@@ -1,7 +1,6 @@
 package aws_test
 
 import (
-	"bytes"
 	"net/http"
 	"os"
 	"slices"
@@ -47,8 +46,8 @@ func locust() []protocol.Resource {
 			`"container":{"image":"public.ecr.aws/nginx/nginx:stable","port":80}`,
 			"AwsSubnet public", "AwsSecurityGroup target"),
 		res(aws.KindTaskDefinition, "locust", `,"launch":"FARGATE","cpu":256,"memoryMiB":512,"executionRole":"task-execution","logGroup":"locust",`+
-			`"containers":[{"name":"locust","image":"locustio/locust:2.32.0","command":["-f","/mnt/locustfile.py","--headless","-u","5","-r","1","-t","1m"],`+
-			`"environment":[{"name":"LOCUST_HOST","instanceIp":"target","prefix":"http://"}]}]`,
+			`"containers":[{"containerName":"locust","image":"locustio/locust:2.32.0","command":["-f","/mnt/locustfile.py","--headless","-u","5","-r","1","-t","1m"],`+
+			`"environment":[{"variable":"LOCUST_HOST","instanceIp":"target","prefix":"http://"}]}]`,
 			"AwsIamRole task-execution", "AwsLogGroup locust", "AwsInstance target"),
 		res(aws.KindService, "locust", `,"cluster":"main","taskDefinition":"locust","count":0,"launch":"FARGATE_SPOT","subnet":"public",`+
 			`"securityGroup":"locust","publicIp":true`,
@@ -67,7 +66,7 @@ func ecsOnEC2() []protocol.Resource {
 		res(aws.KindInstance, "host", `,"cluster":"main","subnet":"public","securityGroup":"target","role":"instance","instanceType":"t4g.micro"`,
 			"AwsEcsCluster main", "AwsSubnet public", "AwsSecurityGroup target", "AwsIamRole instance"),
 		res(aws.KindTaskDefinition, "nginx", `,"launch":"EC2","cpu":128,"memoryMiB":128,"executionRole":"task-execution","logGroup":"web",`+
-			`"containers":[{"name":"nginx","image":"public.ecr.aws/nginx/nginx:stable","ports":[{"container":80,"host":80}]}]`,
+			`"containers":[{"containerName":"nginx","image":"public.ecr.aws/nginx/nginx:stable","ports":[{"container":80,"host":80}]}]`,
 			"AwsIamRole task-execution", "AwsLogGroup web"),
 		res(aws.KindService, "web", `,"cluster":"main","taskDefinition":"nginx","count":1,"launch":"EC2"`,
 			"AwsEcsCluster main", "AwsEcsTaskDefinition nginx"),
@@ -164,7 +163,8 @@ func TestManifest(t *testing.T) {
 			t.Errorf("%s has no explicit delete", k.Kind)
 		}
 		for _, o := range k.Operations {
-			if o.Op == aws.OpDelete || o.Op == aws.OpRunTask || o.Op == aws.OpAdopt && o.Adopts {
+			if o.Op == aws.OpDelete || o.Op == aws.OpRunTask || o.Op == aws.OpResize || o.Op == aws.OpReboot || o.Op == aws.OpShortenRetention ||
+				o.Op == aws.OpAdopt && o.Adopts {
 				continue
 			}
 			if o.Explicit {
@@ -172,8 +172,13 @@ func TestManifest(t *testing.T) {
 			}
 		}
 	}
-	if !slices.ContainsFunc(m.Kinds, func(k protocol.Kind) bool { return k.Kind == aws.KindService }) {
-		t.Error("no service kind")
+	for _, k := range m.Kinds {
+		if a, ok := m.Operation(k.Kind, aws.OpAdopt); !ok || !a.Adopts || !a.Explicit {
+			t.Errorf("%s has no explicit adopt", k.Kind)
+		}
+		if len(k.Spec) == 0 || len(k.Imports) == 0 {
+			t.Errorf("%s gives no spec, or imports nothing", k.Kind)
+		}
 	}
 }
 
@@ -199,27 +204,48 @@ func TestEveryCallIsClassified(t *testing.T) {
 // with what Mamela will classify its requests with.
 func shipped(t *testing.T) map[string]protocol.Catalog {
 	out := map[string]protocol.Catalog{}
-	for name := range catalogs.All {
+	for _, name := range catalogs.Names() {
 		out[name] = providertest.Catalog(t, "../pome/catalogs/"+name+".json")
 	}
 	return out
 }
 
-// The catalogs the Pome ships are exactly what the catalogs package writes (build.sh), and
-// mamela-provider.toml lists each of them.
-func TestShippedCatalogsAreTheSource(t *testing.T) {
+// mamela-provider.toml lists each catalog the Pome ships (their content is checked by the
+// catalogs package: the overlay, and the models when they are fetched).
+func TestShippedCatalogsAreListed(t *testing.T) {
 	toml, _ := os.ReadFile("../pome/mamela-provider.toml")
-	for name, c := range catalogs.All {
-		want, err := catalogs.Encode(c)
-		if err != nil {
-			t.Fatal(err)
-		}
-		got, _ := os.ReadFile("../pome/catalogs/" + name + ".json")
-		if !bytes.Equal(got, want) {
-			t.Errorf("pome/catalogs/%s.json is not what catalogs writes: run ./build.sh", name)
-		}
+	for _, name := range catalogs.Names() {
 		if !strings.Contains(string(toml), name+` = "catalogs/`+name+`.json"`) {
 			t.Errorf("pome/mamela-provider.toml does not list catalog %s: run ./build.sh", name)
+		}
+	}
+}
+
+// Every call the provider declares sends only parameters its catalog entry has, in the place the
+// entry says: the host refuses any other (and the catalogs come from AWS's models).
+func TestEveryCallFitsItsCatalog(t *testing.T) {
+	cats := shipped(t)
+	m := aws.Provider.Manifest()
+	all := append(slices.Clone(m.ObserveCalls), m.Guard.Calls...)
+	for _, k := range m.Kinds {
+		for _, o := range k.Operations {
+			all = append(all, o.Calls...)
+		}
+	}
+	for _, c := range all {
+		e, ok := cats[c.API].LookupCall(c)
+		if !ok {
+			continue // TestEveryCallIsClassified says so
+		}
+		for _, part := range []struct {
+			in     string
+			params []string
+		}{{"form", c.Form}, {"json", c.JSON}, {"header", c.Header}, {"query", c.Query}} {
+			for _, p := range part.params {
+				if e.In(p) != part.in {
+					t.Errorf("%s %v: parameter %s is not in the %s of its catalog entry", c.API, c.Fixed, p, part.in)
+				}
+			}
 		}
 	}
 }

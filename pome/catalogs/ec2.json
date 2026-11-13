@@ -221,7 +221,8 @@
         "Action",
         "Version",
         "InstanceId",
-        "InstanceType.Value"
+        "InstanceType.Value",
+        "GroupId.1"
       ],
       "fixed": {
         "Action": "ModifyInstanceAttribute",

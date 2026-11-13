@@ -7,3 +7,4 @@ mamela.site.toml
 /.mamela/
 target/
 !/pome/provider.wasm
+/.cache/

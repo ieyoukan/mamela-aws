@@ -84,7 +84,7 @@ type vpcState struct {
 func (vpcKind) kind() protocol.ResourceKind { return KindVpc }
 func (vpcKind) reads() []protocol.Call      { return []protocol.Call{describeVpcs} }
 func (vpcKind) operations() []protocol.Operation {
-	return []protocol.Operation{op(OpCreate, createVpc), unsupportedOp(OpReplace, "a VPC keeps its CIDR block: declare a new one"), deleteOp(deleteVpc), adoptOp()}
+	return []protocol.Operation{op(OpCreate, createVpc), unsupportedOp(OpReplace, "a VPC keeps its CIDR block: declare a new one"), deleteOp(deleteVpc), adoptOp(createTags)}
 }
 
 func (k vpcKind) list(c *client) ([]object, error) { return k.listBy(c, tagged()) }
@@ -103,7 +103,7 @@ func (vpcKind) listBy(c *client, params map[string]string) ([]object, error) {
 	}
 	var out []object
 	for _, v := range resp.Items {
-		out = append(out, object{Name: tagOf(v.Tags, TagName), Boundary: tagOf(v.Tags, TagBoundary), IDs: map[string]string{"VpcId": v.ID},
+		out = append(out, object{Name: tagOf(v.Tags, TagName), Boundary: tagOf(v.Tags, TagBoundary), IDs: map[string]string{"VpcId": v.ID, "ResourceId.1": v.ID},
 			State: vpcState{CIDR: v.CIDR}})
 	}
 	return out, nil
@@ -174,7 +174,7 @@ func (gatewayKind) kind() protocol.ResourceKind { return KindInternetGateway }
 func (gatewayKind) reads() []protocol.Call      { return []protocol.Call{describeGateways} }
 func (gatewayKind) operations() []protocol.Operation {
 	return []protocol.Operation{op(OpCreate, createGateway), op(OpAttach, attachGateway),
-		unsupportedOp(OpReplace, "the gateway is attached to another VPC: detach it by hand"), deleteOp(detachGateway, deleteGateway), adoptOp()}
+		unsupportedOp(OpReplace, "the gateway is attached to another VPC: detach it by hand"), deleteOp(detachGateway, deleteGateway), adoptOp(createTags)}
 }
 
 func (k gatewayKind) list(c *client) ([]object, error) { return k.listBy(c, tagged()) }
@@ -199,7 +199,7 @@ func (gatewayKind) listBy(c *client, params map[string]string) ([]object, error)
 		if len(g.Attachments) > 0 {
 			st.AttachedTo = g.Attachments[0].VpcID
 		}
-		out = append(out, object{Name: tagOf(g.Tags, TagName), Boundary: tagOf(g.Tags, TagBoundary), IDs: map[string]string{"InternetGatewayId": g.ID}, State: st})
+		out = append(out, object{Name: tagOf(g.Tags, TagName), Boundary: tagOf(g.Tags, TagBoundary), IDs: map[string]string{"InternetGatewayId": g.ID, "ResourceId.1": g.ID}, State: st})
 	}
 	return out, nil
 }
@@ -291,7 +291,7 @@ type subnetState struct {
 func (subnetKind) kind() protocol.ResourceKind { return KindSubnet }
 func (subnetKind) reads() []protocol.Call      { return []protocol.Call{describeSubnets} }
 func (subnetKind) operations() []protocol.Operation {
-	return []protocol.Operation{op(OpCreate, createSubnet), unsupportedOp(OpReplace, "a subnet keeps its VPC, CIDR block and zone: declare a new one"), deleteOp(deleteSubnet), adoptOp()}
+	return []protocol.Operation{op(OpCreate, createSubnet), unsupportedOp(OpReplace, "a subnet keeps its VPC, CIDR block and zone: declare a new one"), deleteOp(deleteSubnet), adoptOp(createTags)}
 }
 
 func (k subnetKind) list(c *client) ([]object, error) { return k.listBy(c, tagged()) }
@@ -312,7 +312,7 @@ func (subnetKind) listBy(c *client, params map[string]string) ([]object, error) 
 	}
 	var out []object
 	for _, s := range resp.Items {
-		out = append(out, object{Name: tagOf(s.Tags, TagName), Boundary: tagOf(s.Tags, TagBoundary), IDs: map[string]string{"SubnetId": s.ID},
+		out = append(out, object{Name: tagOf(s.Tags, TagName), Boundary: tagOf(s.Tags, TagBoundary), IDs: map[string]string{"SubnetId": s.ID, "ResourceId.1": s.ID},
 			State: subnetState{CIDR: s.CIDR, Zone: s.Zone, VpcID: s.VpcID}})
 	}
 	return out, nil
@@ -383,7 +383,7 @@ func (routeTableKind) reads() []protocol.Call      { return []protocol.Call{desc
 func (routeTableKind) operations() []protocol.Operation {
 	return []protocol.Operation{op(OpCreate, createRouteTable), op(OpRoute, createRoute, associateRoutes),
 		unsupportedOp(OpReplace, "the route table routes elsewhere, or serves another subnet: change it by hand"),
-		deleteOp(disassociate, deleteRouteTable), adoptOp()}
+		deleteOp(disassociate, deleteRouteTable), adoptOp(createTags)}
 }
 
 func (k routeTableKind) list(c *client) ([]object, error) { return k.listBy(c, tagged()) }
@@ -409,7 +409,7 @@ func (routeTableKind) listBy(c *client, params map[string]string) ([]object, err
 	}
 	var out []object
 	for _, t := range resp.Items {
-		o := object{Name: tagOf(t.Tags, TagName), Boundary: tagOf(t.Tags, TagBoundary), IDs: map[string]string{"RouteTableId": t.ID}}
+		o := object{Name: tagOf(t.Tags, TagName), Boundary: tagOf(t.Tags, TagBoundary), IDs: map[string]string{"RouteTableId": t.ID, "ResourceId.1": t.ID}}
 		st := routeTableState{}
 		for _, r := range t.Routes {
 			if r.Destination == "0.0.0.0/0" {
@@ -543,7 +543,7 @@ func (groupKind) kind() protocol.ResourceKind { return KindSecurityGroup }
 func (groupKind) reads() []protocol.Call      { return []protocol.Call{describeGroups} }
 func (groupKind) operations() []protocol.Operation {
 	return []protocol.Operation{op(OpCreate, createGroup), op(OpIngress, authorizeIngress),
-		unsupportedOp(OpReplace, "a security group keeps its VPC, and Mamela never removes a rule: remove it by hand"), deleteOp(deleteGroup), adoptOp()}
+		unsupportedOp(OpReplace, "a security group keeps its VPC, and Mamela never removes a rule: remove it by hand"), deleteOp(deleteGroup), adoptOp(createTags)}
 }
 
 func (k groupKind) list(c *client) ([]object, error) { return k.listBy(c, tagged()) }
@@ -582,7 +582,7 @@ func (groupKind) listBy(c *client, params map[string]string) ([]object, error) {
 			}
 		}
 		slices.Sort(st.Rules)
-		out = append(out, object{Name: tagOf(g.Tags, TagName), Boundary: tagOf(g.Tags, TagBoundary), IDs: map[string]string{"GroupId": g.ID}, State: st})
+		out = append(out, object{Name: tagOf(g.Tags, TagName), Boundary: tagOf(g.Tags, TagBoundary), IDs: map[string]string{"GroupId": g.ID, "ResourceId.1": g.ID}, State: st})
 	}
 	return out, nil
 }

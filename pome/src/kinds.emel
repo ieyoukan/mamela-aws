@@ -147,6 +147,289 @@ pub fn aws_security_group_ref(r: AwsSecurityGroup) -> Ref {
   Ref(kind: "AwsSecurityGroup", name: r.name)
 }
 
+## A CloudWatch Logs log group, /mamela/<boundary>/<name>, for tasks' logs. Mamela keeps its logs longer when the declaration says so; it never shortens the retention in a plan (that deletes logs): `mamela act --confirm <name> shorten-retention` does.
+##
+## `boundary`: the boundary (the guard's): the log group is /mamela/<boundary>/<name>
+## `retention_days`: how many days its logs are kept: 1, 3, 5, 7, 14, 30, 60, 90, 120, 150, 180, 365, 400, 545, 731, 1096, 1827, 2192, 2557, 2922, 3288 or 3653
+pub type AwsLogGroup(name: String, boundary: String, retention_days: Int)
+
+## Declares the AwsLogGroup: Mamela makes it so, through the provider.
+pub fn aws_log_group(graph: Mamela.Graph, r: AwsLogGroup) -> Mamela.Graph {
+  spec = List.flatten(
+    [[("boundary", Text(r.boundary))], [("retentionDays", integer(r.retention_days))]],
+  )
+  Mamela.provided(graph, PROVIDER, "AwsLogGroup", r.name, spec)
+}
+
+## A reference to the AwsLogGroup, for what needs it first.
+pub fn aws_log_group_ref(r: AwsLogGroup) -> Ref {
+  Ref(kind: "AwsLogGroup", name: r.name)
+}
+
+## An IAM role under /mamela/ for ECS: assumed by ECS tasks or EC2 instances, with one AWS-managed ECS policy (and an instance profile of its name for EC2). Its description is Mamela's marker; it carries no tags.
+##
+## `boundary`: the boundary (the guard's): the role's marker names it
+## `trust`: who assumes it: ECS tasks, or EC2 instances (ecs-tasks, ec2)
+## `policy`: the AWS-managed ECS policy it has: AmazonECSTaskExecutionRolePolicy or AmazonEC2ContainerServiceforEC2Role (ecs-task-execution, ecs-for-ec2)
+## `instance_profile`: an instance profile of its name (for EC2 instances) (optional)
+pub type AwsIamRole(
+  name: String,
+  boundary: String,
+  trust: AwsIamRoleTrust,
+  policy: AwsIamRolePolicy,
+  instance_profile: Option[Bool],
+)
+
+## Declares the AwsIamRole: Mamela makes it so, through the provider.
+pub fn aws_iam_role(graph: Mamela.Graph, r: AwsIamRole) -> Mamela.Graph {
+  spec = List.flatten(
+    [
+      [("boundary", Text(r.boundary))],
+      [("trust", aws_iam_role_trust_text(r.trust))],
+      [("policy", aws_iam_role_policy_text(r.policy))],
+      r.instance_profile match {
+        Some(v) -> [("instanceProfile", Dynamic.Bool(v))]
+        None    -> []
+      },
+    ],
+  )
+  Mamela.provided(graph, PROVIDER, "AwsIamRole", r.name, spec)
+}
+
+## A reference to the AwsIamRole, for what needs it first.
+pub fn aws_iam_role_ref(r: AwsIamRole) -> Ref {
+  Ref(kind: "AwsIamRole", name: r.name)
+}
+
+## An ECS cluster: Fargate and Fargate Spot (Spot by default), and the container instances that join it. Container Insights is off.
+##
+## `boundary`: the boundary (the guard's): it tags the cluster
+pub type AwsEcsCluster(name: String, boundary: String)
+
+## Declares the AwsEcsCluster: Mamela makes it so, through the provider.
+pub fn aws_ecs_cluster(graph: Mamela.Graph, r: AwsEcsCluster) -> Mamela.Graph {
+  spec = List.flatten([[("boundary", Text(r.boundary))]])
+  Mamela.provided(graph, PROVIDER, "AwsEcsCluster", r.name, spec)
+}
+
+## A reference to the AwsEcsCluster, for what needs it first.
+pub fn aws_ecs_cluster_ref(r: AwsEcsCluster) -> Ref {
+  Ref(kind: "AwsEcsCluster", name: r.name)
+}
+
+## An EC2 instance of the ECS-optimized Amazon Linux 2023 that joins a cluster (with a role's instance profile) or runs one container; or, adopted, one that keeps its own image and setup. The explicit operations resize and reboot stop or reboot it.
+##
+## `boundary`: the boundary (the guard's): it tags the instance
+## `instance_type`: its type (the guard's instance_types; resize changes it)
+## `cluster`: with role: a container instance of this cluster (optional)
+## `role`: the role (trust ec2) whose instance profile it has (optional)
+## `container`: or: the container it runs, with no role (optional)
+pub type AwsInstance(
+  name: String,
+  boundary: String,
+  subnet: AwsSubnet,
+  security_group: AwsSecurityGroup,
+  instance_type: String,
+  cluster: Option[AwsEcsCluster],
+  role: Option[AwsIamRole],
+  container: Option[HostContainer],
+)
+
+## Declares the AwsInstance: Mamela makes it so, through the provider.
+pub fn aws_instance(graph: Mamela.Graph, r: AwsInstance) -> Mamela.Graph {
+  spec = List.flatten(
+    [
+      [("boundary", Text(r.boundary))],
+      [("subnet", Text(r.subnet.name))],
+      [("securityGroup", Text(r.security_group.name))],
+      [("instanceType", Text(r.instance_type))],
+      r.cluster match {
+        Some(v) -> [("cluster", Text(v.name))]
+        None    -> []
+      },
+      r.role match {
+        Some(v) -> [("role", Text(v.name))]
+        None    -> []
+      },
+      r.container match {
+        Some(v) -> [("container", host_container_spec(v))]
+        None    -> []
+      },
+    ],
+  )
+  after = List.flatten(
+    [
+      [aws_subnet_ref(r.subnet)],
+      [aws_security_group_ref(r.security_group)],
+      r.cluster match {
+        Some(v) -> [aws_ecs_cluster_ref(v)]
+        None    -> []
+      },
+      r.role match {
+        Some(v) -> [aws_iam_role_ref(v)]
+        None    -> []
+      },
+    ],
+  )
+  Mamela.provided_after(graph, PROVIDER, "AwsInstance", r.name, spec, after)
+}
+
+## A reference to the AwsInstance, for what needs it first.
+pub fn aws_instance_ref(r: AwsInstance) -> Ref {
+  Ref(kind: "AwsInstance", name: r.name)
+}
+
+## An ECS task definition of the family mamela-<boundary>-<name>. A change registers a new revision and deregisters the old one.
+##
+## `boundary`: the boundary (the guard's): the family is mamela-<boundary>-<name>
+## `launch`: where its tasks run: FARGATE (Fargate and Fargate Spot; awsvpc) or EC2 (container instances; bridge)
+## `cpu`: CPU units, 1024 to a vCPU
+## `memory_mi_b`: memory in MiB
+## `execution_role`: the role ECS pulls images and writes logs as (trust ecs-tasks, policy ecs-task-execution) (optional)
+## `log_group`: where its containers' logs go (optional)
+pub type AwsEcsTaskDefinition(
+  name: String,
+  boundary: String,
+  launch: String,
+  cpu: Int,
+  memory_mi_b: Int,
+  execution_role: Option[AwsIamRole],
+  log_group: Option[AwsLogGroup],
+  containers: List[Container],
+)
+
+## Declares the AwsEcsTaskDefinition: Mamela makes it so, through the provider.
+pub fn aws_ecs_task_definition(graph: Mamela.Graph, r: AwsEcsTaskDefinition) -> Mamela.Graph {
+  spec = List.flatten(
+    [
+      [("boundary", Text(r.boundary))],
+      [("launch", Text(r.launch))],
+      [("cpu", integer(r.cpu))],
+      [("memoryMiB", integer(r.memory_mi_b))],
+      r.execution_role match {
+        Some(v) -> [("executionRole", Text(v.name))]
+        None    -> []
+      },
+      r.log_group match {
+        Some(v) -> [("logGroup", Text(v.name))]
+        None    -> []
+      },
+      [("containers", Items(r.containers.map(|x| container_spec(x))))],
+    ],
+  )
+  after = List.flatten(
+    [
+      r.execution_role match {
+        Some(v) -> [aws_iam_role_ref(v)]
+        None    -> []
+      },
+      r.log_group match {
+        Some(v) -> [aws_log_group_ref(v)]
+        None    -> []
+      },
+      List.flatten(r.containers.map(|x| container_after(x))),
+    ],
+  )
+  Mamela.provided_after(graph, PROVIDER, "AwsEcsTaskDefinition", r.name, spec, after)
+}
+
+## A reference to the AwsEcsTaskDefinition, for what needs it first.
+pub fn aws_ecs_task_definition_ref(r: AwsEcsTaskDefinition) -> Ref {
+  Ref(kind: "AwsEcsTaskDefinition", name: r.name)
+}
+
+## An ECS service that keeps count tasks of a task definition running. With 0 tasks, it is a way to run one-off tasks: `mamela act --confirm <name> run-task` runs one, as the service would.
+##
+## `boundary`: the boundary (the guard's): it tags the service
+## `task_definition`: its tasks' definition (the latest revision)
+## `count`: how many tasks it keeps running (0: a service to run one-off tasks with run-task)
+## `launch`: where its tasks run: EC2 (the cluster's container instances), FARGATE or FARGATE_SPOT
+## `subnet`: Fargate: the subnet of its tasks (optional)
+## `security_group`: Fargate: their security group (optional)
+## `public_ip`: Fargate: a public IP address (to pull images without a NAT gateway) (optional)
+pub type AwsEcsService(
+  name: String,
+  boundary: String,
+  cluster: AwsEcsCluster,
+  task_definition: AwsEcsTaskDefinition,
+  count: Int,
+  launch: String,
+  subnet: Option[AwsSubnet],
+  security_group: Option[AwsSecurityGroup],
+  public_ip: Option[Bool],
+)
+
+## Declares the AwsEcsService: Mamela makes it so, through the provider.
+pub fn aws_ecs_service(graph: Mamela.Graph, r: AwsEcsService) -> Mamela.Graph {
+  spec = List.flatten(
+    [
+      [("boundary", Text(r.boundary))],
+      [("cluster", Text(r.cluster.name))],
+      [("taskDefinition", Text(r.task_definition.name))],
+      [("count", integer(r.count))],
+      [("launch", Text(r.launch))],
+      r.subnet match {
+        Some(v) -> [("subnet", Text(v.name))]
+        None    -> []
+      },
+      r.security_group match {
+        Some(v) -> [("securityGroup", Text(v.name))]
+        None    -> []
+      },
+      r.public_ip match {
+        Some(v) -> [("publicIp", Dynamic.Bool(v))]
+        None    -> []
+      },
+    ],
+  )
+  after = List.flatten(
+    [
+      [aws_ecs_cluster_ref(r.cluster)],
+      [aws_ecs_task_definition_ref(r.task_definition)],
+      r.subnet match {
+        Some(v) -> [aws_subnet_ref(v)]
+        None    -> []
+      },
+      r.security_group match {
+        Some(v) -> [aws_security_group_ref(v)]
+        None    -> []
+      },
+    ],
+  )
+  Mamela.provided_after(graph, PROVIDER, "AwsEcsService", r.name, spec, after)
+}
+
+## A reference to the AwsEcsService, for what needs it first.
+pub fn aws_ecs_service_ref(r: AwsEcsService) -> Ref {
+  Ref(kind: "AwsEcsService", name: r.name)
+}
+
+## The values of AwsIamRoleTrust.
+pub enum AwsIamRoleTrust {
+  EcsTasks
+  Ec2
+}
+
+fn aws_iam_role_trust_text(v: AwsIamRoleTrust) -> Dynamic {
+  v match {
+    EcsTasks -> Text("ecs-tasks")
+    Ec2      -> Text("ec2")
+  }
+}
+
+## The values of AwsIamRolePolicy.
+pub enum AwsIamRolePolicy {
+  EcsTaskExecution
+  EcsForEc2
+}
+
+fn aws_iam_role_policy_text(v: AwsIamRolePolicy) -> Dynamic {
+  v match {
+    EcsTaskExecution -> Text("ecs-task-execution")
+    EcsForEc2        -> Text("ecs-for-ec2")
+  }
+}
+
 ## A Ingress, part of a spec.
 ##
 ## `port`: the TCP port
@@ -180,6 +463,129 @@ fn ingress_after(o: Ingress) -> List[Ref] {
         None    -> []
       },
     ],
+  )
+}
+
+## A HostContainer, part of a spec.
+##
+## `image`: the container image (registry/path:tag)
+## `port`: its TCP port, published on the instance
+pub type HostContainer(image: String, port: Int)
+
+fn host_container_spec(o: HostContainer) -> Dynamic {
+  Dynamic.object(List.flatten([[("image", Text(o.image))], [("port", integer(o.port))]]))
+}
+
+## A Container, part of a spec.
+##
+## `container_name`: the container's name
+## `image`: its image (registry/path:tag)
+## `command`: its arguments (the image's entrypoint runs them) (optional)
+## `environment`: (optional)
+## `ports`: (optional)
+## `memory_mi_b`: its hard limit of memory on EC2 (MiB) (optional)
+pub type Container(
+  container_name: String,
+  image: String,
+  command: List[String],
+  environment: List[Env],
+  ports: List[Port],
+  memory_mi_b: Option[Int],
+)
+
+fn container_spec(o: Container) -> Dynamic {
+  Dynamic.object(
+    List.flatten(
+      [
+        [("containerName", Text(o.container_name))],
+        [("image", Text(o.image))],
+        if List.is_empty(o.command) {
+          []
+        } else {
+          [("command", Items(o.command.map(|x| Text(x))))]
+        },
+        if List.is_empty(o.environment) {
+          []
+        } else {
+          [("environment", Items(o.environment.map(|x| env_spec(x))))]
+        },
+        if List.is_empty(o.ports) { [] } else { [("ports", Items(o.ports.map(|x| port_spec(x))))] },
+        o.memory_mi_b match {
+          Some(v) -> [("memoryMiB", integer(v))]
+          None    -> []
+        },
+      ],
+    ),
+  )
+}
+
+fn container_after(o: Container) -> List[Ref] {
+  List.flatten([List.flatten(o.environment.map(|x| env_after(x)))])
+}
+
+## A Env, part of a spec.
+##
+## `variable`: the variable's name
+## `value`: (optional)
+## `instance_ip`: or the private IP address of this instance (optional)
+## `prefix`: before the instance's address (http://) (optional)
+pub type Env(
+  variable: String,
+  value: Option[String],
+  instance_ip: Option[AwsInstance],
+  prefix: Option[String],
+)
+
+fn env_spec(o: Env) -> Dynamic {
+  Dynamic.object(
+    List.flatten(
+      [
+        [("variable", Text(o.variable))],
+        o.value match {
+          Some(v) -> [("value", Text(v))]
+          None    -> []
+        },
+        o.instance_ip match {
+          Some(v) -> [("instanceIp", Text(v.name))]
+          None    -> []
+        },
+        o.prefix match {
+          Some(v) -> [("prefix", Text(v))]
+          None    -> []
+        },
+      ],
+    ),
+  )
+}
+
+fn env_after(o: Env) -> List[Ref] {
+  List.flatten(
+    [
+      o.instance_ip match {
+        Some(v) -> [aws_instance_ref(v)]
+        None    -> []
+      },
+    ],
+  )
+}
+
+## A Port, part of a spec.
+##
+## `container`: the container's TCP port
+## `host`: on EC2, the instance's port (none: a port ECS chooses) (optional)
+pub type Port(container: Int, host: Option[Int])
+
+fn port_spec(o: Port) -> Dynamic {
+  Dynamic.object(
+    List.flatten(
+      [
+        [("container", integer(o.container))],
+        o.host match {
+          Some(v) -> [("host", integer(v))]
+          None    -> []
+        },
+      ],
+    ),
   )
 }
 
