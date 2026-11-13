@@ -283,6 +283,17 @@ func (a *API) ecs(act string, in map[string]any) (any, error) {
 		}
 		t.status = "INACTIVE"
 		return map[string]any{"taskDefinition": map[string]any{"family": t.family, "revision": t.revision, "status": t.status}}, nil
+	case "DeleteTaskDefinitions":
+		var out []map[string]any
+		for _, td := range strs(in, "taskDefinitions") {
+			t := a.findTaskDef(td)
+			if t == nil || t.status == "ACTIVE" {
+				return nil, fail(400, "ClientException", "The specified task definition must be INACTIVE to be deleted.")
+			}
+			t.status = "DELETE_IN_PROGRESS"
+			out = append(out, map[string]any{"family": t.family, "revision": t.revision, "status": t.status})
+		}
+		return map[string]any{"taskDefinitions": out, "failures": []any{}}, nil
 
 	case "CreateService", "RunTask":
 		c, err := clusterOf()

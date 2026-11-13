@@ -155,6 +155,23 @@
     {
       "method": "POST",
       "path": "/",
+      "effect": "lose-data",
+      "fixed": {
+        "X-Amz-Target": "AmazonEC2ContainerServiceV20141113.DeleteTaskDefinitions"
+      },
+      "header": [
+        "X-Amz-Target"
+      ],
+      "json": [
+        "taskDefinitions"
+      ],
+      "bind": [
+        "taskDefinitions"
+      ]
+    },
+    {
+      "method": "POST",
+      "path": "/",
       "effect": "create",
       "fixed": {
         "X-Amz-Target": "AmazonEC2ContainerServiceV20141113.CreateService"

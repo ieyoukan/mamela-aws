@@ -151,7 +151,7 @@ func (h *host) request(method string, r protocol.HostRequest) (protocol.HostResp
 			return refuse("%v %v is not one of the change's approved requests", call.Fixed, params)
 		}
 		for _, b := range e.Bind {
-			if v := params[b]; len(v) != 1 || protocol.ParamText(e.In(b), v[0]) != h.change.IDs[b] {
+			if v := params[b]; len(v) != 1 || protocol.ObjectText(e.In(b), v[0]) != h.change.IDs[b] {
 				return refuse("%s=%v is not the change's %s %q", b, v, b, h.change.IDs[b])
 			}
 		}

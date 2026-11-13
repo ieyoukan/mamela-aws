@@ -181,6 +181,9 @@ var ECS = API{Name: "ecs", Model: "ecs", Ops: []Op{
 	{Name: "DescribeTaskDefinition", Params: []string{"taskDefinition", "include"}},
 	{Name: "ListTaskDefinitions", Params: []string{"familyPrefix", "status", "sort", "nextToken", "maxResults"}},
 	{Name: "DeregisterTaskDefinition", Params: []string{"taskDefinition"}, Bind: []string{"taskDefinition"}},
+	// Deleting a revision for good, once it is INACTIVE: bound to the one revision the change names
+	// (a list of exactly the permit's ID; Mamela compares a list of one as its element).
+	{Name: "DeleteTaskDefinitions", Params: []string{"taskDefinitions"}, Bind: []string{"taskDefinitions"}},
 	{Name: "CreateService", Params: []string{"cluster", "serviceName", "taskDefinition", "desiredCount", "launchType",
 		"capacityProviderStrategy", "networkConfiguration", "placementConstraints", "placementStrategy", "schedulingStrategy",
 		"deploymentConfiguration", "tags", "clientToken", "enableECSManagedTags", "propagateTags"}},

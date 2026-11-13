@@ -428,6 +428,18 @@ func checkRequest(s GuardSettings, w world, created map[string]bool, a protocol.
 		for _, k := range []string{"cluster", "service", "taskDefinition", "executionRoleArn"} {
 			ref(k, param(a, k))
 		}
+		if v := a.Params["taskDefinitions"]; len(v) == 1 {
+			var tds []string
+			json.Unmarshal([]byte(v[0]), &tds)
+			if len(tds) == 0 {
+				out = append(out, "deletes no task definition it names")
+			}
+			for _, td := range tds {
+				if !strings.HasPrefix(td, familyPrefix+b+"-") {
+					out = append(out, fmt.Sprintf("deletes task definition %s, not of the boundary's families %s%s-", td, familyPrefix, b))
+				}
+			}
+		}
 		if v := a.Params["networkConfiguration"]; len(v) == 1 {
 			var n struct {
 				Awsvpc struct {

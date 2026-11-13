@@ -177,3 +177,54 @@ func TestRetention(t *testing.T) {
 		}
 	})
 }
+
+// taskDefinitionWorld is a task definition Mamela registered, with its role and log group.
+func taskDefinitionWorld(t *testing.T) ([]protocol.Resource, *host, *fakeaws.API) {
+	api := fakeaws.New()
+	h := newHost(t, api)
+	desired := []protocol.Resource{
+		res(aws.KindLogGroup, "app", `,"retentionDays":7`),
+		res(aws.KindIAMRole, "task-execution", `,"trust":"ecs-tasks","policy":"ecs-task-execution"`),
+		res(aws.KindTaskDefinition, "app", `,"launch":"FARGATE","cpu":256,"memoryMiB":512,"executionRole":"task-execution","logGroup":"app",`+
+			`"containers":[{"containerName":"nginx","image":"public.ecr.aws/nginx/nginx:stable"}]`,
+			"AwsIamRole task-execution", "AwsLogGroup app"),
+	}
+	h.converge(desired, nil)
+	return desired, h, api
+}
+
+// Deleting a task definition deletes it for good: it is deregistered, then deleted (ECS would keep
+// a deregistered one forever). One only deregistered (by an earlier delete, or a request not sent)
+// is still observed, and deleting it again deletes it.
+func TestDeleteTaskDefinition(t *testing.T) {
+	const id = "AwsEcsTaskDefinition app"
+	for _, at := range []int{-1, 1} {
+		desired, h, _ := taskDefinitionWorld(t)
+		c, err := h.prepare(aws.OpDelete, &desired[2], observed(t, h.observe(desired, nil), id))
+		if err != nil || len(c.Requests) != 2 {
+			t.Fatalf("prepare: %+v %v", c, err)
+		}
+		err = h.apply(c, at, faultNotSent)
+		if at < 0 {
+			if err != nil {
+				t.Fatal(err)
+			}
+		} else {
+			if err == nil {
+				t.Fatal("the delete was not sent, and the apply succeeded")
+			}
+			// Deregistered, not deleted: observed as inactive, and deleted with one request.
+			o := observed(t, h.observe(nil, nil), id)
+			c, err := h.prepare(aws.OpDelete, nil, o)
+			if err != nil || len(c.Requests) != 1 || !strings.Contains(c.Requests[0].Params["X-Amz-Target"][0], "DeleteTaskDefinitions") {
+				t.Fatalf("prepare the inactive one: %+v %v", c, err)
+			}
+			if err := h.apply(c, -1, ""); err != nil {
+				t.Fatal(err)
+			}
+		}
+		if slices.ContainsFunc(h.observe(nil, nil), func(o protocol.Observed) bool { return o.ID == id }) {
+			t.Fatalf("at %d: the task definition is still observed after delete", at)
+		}
+	}
+}

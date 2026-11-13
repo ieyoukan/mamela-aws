@@ -27,6 +27,7 @@ var (
 	describeTaskDef   = jsonCall(APIECS, "DescribeTaskDefinition", "taskDefinition", "include")
 	registerTaskDef   = jsonCall(APIECS, "RegisterTaskDefinition", "family", "containerDefinitions", "cpu", "memory", "networkMode", "requiresCompatibilities", "executionRoleArn", "tags")
 	deregisterTaskDef = jsonCall(APIECS, "DeregisterTaskDefinition", "taskDefinition")
+	deleteTaskDefs    = jsonCall(APIECS, "DeleteTaskDefinitions", "taskDefinitions")
 )
 
 type taskDefinitionKind struct{}
@@ -73,6 +74,9 @@ type taskDefinitionState struct {
 	// Other is what it has that AwsEcsTaskDefinition does not declare (its shape is then not one
 	// a declaration can have).
 	Other []string `json:"other,omitempty"`
+	// Inactive: the family has no ACTIVE revision; this one was deregistered, and ECS keeps it
+	// until it is deleted (delete deletes it for good).
+	Inactive bool `json:"inactive,omitempty"`
 }
 
 // Family is the family of the task definitions Mamela registers.
@@ -83,8 +87,8 @@ func (taskDefinitionKind) reads() []protocol.Call {
 	return []protocol.Call{listTaskDefs, describeTaskDef}
 }
 func (taskDefinitionKind) operations() []protocol.Operation {
-	return []protocol.Operation{op(OpCreate, registerTaskDef), op(OpRevise, registerTaskDef, deregisterTaskDef), deleteOp(deregisterTaskDef),
-		adoptOp(tagECS)}
+	return []protocol.Operation{op(OpCreate, registerTaskDef), op(OpRevise, registerTaskDef, deregisterTaskDef),
+		deleteOp(deregisterTaskDef, deleteTaskDefs), adoptOp(tagECS)}
 }
 func (taskDefinitionKind) spec() any { return taskDefinitionSpec{} }
 func (taskDefinitionKind) doc() string {
@@ -93,6 +97,11 @@ func (taskDefinitionKind) doc() string {
 
 // latestTaskDefinitions are the latest active revision of each family of this provider's.
 func latestTaskDefinitions(c *client) (map[string]int64, error) {
+	return taskDefinitionsWith(c, "ACTIVE")
+}
+
+// taskDefinitionsWith are the latest revision of each family of this provider's with a status.
+func taskDefinitionsWith(c *client, status string) (map[string]int64, error) {
 	latest := map[string]int64{}
 	next := ""
 	for {
@@ -100,7 +109,7 @@ func latestTaskDefinitions(c *client) (map[string]int64, error) {
 			Arns []string `json:"taskDefinitionArns"`
 			Next string   `json:"nextToken"`
 		}
-		m := map[string]any{"status": "ACTIVE"}
+		m := map[string]any{"status": status}
 		if next != "" {
 			m["nextToken"] = next
 		}
@@ -149,15 +158,28 @@ func taskDefinitionObject(d ecsTaskDefinition) object {
 	if origin == "" {
 		origin = d.text("taskDefinitionArn")
 	}
+	td := fmt.Sprintf("%s:%d", family, int64(rev))
 	return object{Name: ecsTagOf(d.Tags, TagName), Boundary: ecsTagOf(d.Tags, TagBoundary),
-		IDs:   map[string]string{"family": family, "taskDefinition": fmt.Sprintf("%s:%d", family, int64(rev)), "resourceArn": origin},
-		State: taskDefinitionState{Revision: int64(rev), Digest: ecsTagOf(d.Tags, TagDigest), Shape: shape, Other: other}}
+		IDs: map[string]string{"family": family, "taskDefinition": td, "resourceArn": origin, "taskDefinitions": td},
+		State: taskDefinitionState{Revision: int64(rev), Digest: ecsTagOf(d.Tags, TagDigest), Shape: shape, Other: other,
+			Inactive: d.text("status") == "INACTIVE"}}
 }
 
 func (taskDefinitionKind) list(c *client) ([]object, error) {
 	latest, err := latestTaskDefinitions(c)
 	if err != nil {
 		return nil, err
+	}
+	// A family with no ACTIVE revision left: its latest INACTIVE one, which ECS keeps until it is
+	// deleted (Mamela's delete deletes it; an earlier one only deregistered it).
+	inactive, err := taskDefinitionsWith(c, "INACTIVE")
+	if err != nil {
+		return nil, err
+	}
+	for family, rev := range inactive {
+		if _, ok := latest[family]; !ok {
+			latest[family] = rev
+		}
 	}
 	var out []object
 	for _, family := range slices.Sorted(maps.Keys(latest)) {
@@ -278,6 +300,15 @@ func (taskDefinitionKind) diff(r protocol.Resource, o protocol.Observed, deps ma
 	if o.Exists {
 		family, origin = o.IDs["family"], o.IDs["resourceArn"] // an adopted one keeps its family
 	}
+	if o.Exists && state[taskDefinitionState](o).Inactive {
+		// Deregistered: a new revision of its family is registered, as if there were none.
+		a, digest, err := register(r, s, family, origin, deps)
+		if err != nil {
+			return nil, err
+		}
+		return []protocol.Change{{Resource: r.ID, Kind: KindTaskDefinition, Op: OpCreate, IDs: map[string]string{"mamela-name": r.Name, "family": family},
+			Reasons: []string{fmt.Sprintf("task definition %s has no active revision: register one (digest %s)", family, digest)}, Requests: []protocol.Approved{a}}}, nil
+	}
 	a, digest, err := register(r, s, family, origin, deps)
 	if err != nil {
 		return nil, err
@@ -301,11 +332,18 @@ func (taskDefinitionKind) diff(r protocol.Resource, o protocol.Observed, deps ma
 		Requests: []protocol.Approved{a, jsonReq(APIECS, "DeregisterTaskDefinition", map[string]any{"taskDefinition": old})}}}, nil
 }
 
+// remove deregisters the revision (unless it is INACTIVE already) and deletes it for good. A
+// service that still uses it keeps its running tasks, but cannot start new ones: delete the
+// service first.
 func (taskDefinitionKind) remove(o protocol.Observed) (protocol.Change, error) {
 	td := o.IDs["taskDefinition"]
-	return protocol.Change{Resource: o.ID, Kind: KindTaskDefinition, Op: OpDelete, IDs: map[string]string{"taskDefinition": td},
-		Reasons:  []string{"deregister " + td + " (ECS keeps it as INACTIVE; a service that uses it keeps running)"},
-		Requests: []protocol.Approved{jsonReq(APIECS, "DeregisterTaskDefinition", map[string]any{"taskDefinition": td})}}, nil
+	ch := protocol.Change{Resource: o.ID, Kind: KindTaskDefinition, Op: OpDelete, IDs: map[string]string{"taskDefinition": td, "taskDefinitions": td}}
+	if !state[taskDefinitionState](o).Inactive {
+		ch.Requests = append(ch.Requests, jsonReq(APIECS, "DeregisterTaskDefinition", map[string]any{"taskDefinition": td}))
+	}
+	ch.Reasons = []string{"delete task definition " + td + " for good (deregistered first if it is ACTIVE; delete the services that use it first)"}
+	ch.Requests = append(ch.Requests, jsonReq(APIECS, "DeleteTaskDefinitions", map[string]any{"taskDefinitions": []string{td}}))
+	return ch, nil
 }
 
 // digestOf is the digest an approved RegisterTaskDefinition is tagged with.
@@ -336,6 +374,19 @@ func (k taskDefinitionKind) done(c *client, _ protocol.Change, a protocol.Approv
 			return false, err
 		}
 		return d.text("status") != "ACTIVE", nil
+	case "DeleteTaskDefinitions":
+		var tds []string
+		if err := json.Unmarshal([]byte(param(a, "taskDefinitions")), &tds); err != nil || len(tds) != 1 {
+			return false, fmt.Errorf("taskDefinitions %s", param(a, "taskDefinitions"))
+		}
+		d, err := describeTaskDefinition(c, tds[0])
+		if notFound(err) {
+			return true, nil
+		}
+		if err != nil {
+			return false, err
+		}
+		return d.text("status") == "DELETE_IN_PROGRESS", nil
 	}
 	return false, nil
 }

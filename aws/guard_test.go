@@ -60,6 +60,10 @@ func TestGuardKeepsTheBoundary(t *testing.T) {
 			"tags":                 ecsTags("locust", "web")}), "subnet-other"},
 		{"a task definition of another family", jsonReq(APIECS, "RegisterTaskDefinition", map[string]any{"family": "web", "tags": ecsTags("locust", "web")}), `"web"`},
 		{"someone else's log group", jsonReq(APILogs, "DeleteLogGroup", map[string]any{"logGroupName": "/ecs/locust"}), "/ecs/locust"},
+		{"deleting the boundary's task definition", jsonReq(APIECS, "DeleteTaskDefinitions", map[string]any{"taskDefinitions": []string{"mamela-locust-app:1"}}), ""},
+		{"deleting someone else's task definition", jsonReq(APIECS, "DeleteTaskDefinitions", map[string]any{"taskDefinitions": []string{"web:1"}}), "not of the boundary's families"},
+		{"deleting another boundary's task definition", jsonReq(APIECS, "DeleteTaskDefinitions", map[string]any{"taskDefinitions": []string{"mamela-prod-app:1"}}), "not of the boundary's families"},
+		{"deleting no task definition", jsonReq(APIECS, "DeleteTaskDefinitions", map[string]any{"taskDefinitions": []string{}}), "deletes no task definition"},
 
 		// Resizing and security groups.
 		{"a resize to an allowed type", queryReq(APIEC2, "ModifyInstanceAttribute", map[string]string{"InstanceId": "locust-instance", "InstanceType.Value": "t4g.micro"}), ""},
