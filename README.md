@@ -324,6 +324,6 @@ go test ./...                     # 適合試験（Mamela の providertest）、
   - guard が、境界の外への変更と、別の境界のものの引き継ぎを止めること
   - `mamela import terraform` の通し（state の JSON から Emela を書き、宣言として評価できること）
 - **Pome の試験:** Emela の Pome は `pome/` にあり、`emela test` で確かめます。
-- **公開前の注意:** Mamela Pome 0.3.0 と、この Pome の公開までは、`[replace]` で隣の mamela のチェックアウトを使います。
+- **公開した版:** この Pome は `pome/v0.1.0` で公開しています（依存の Mamela Pome は 0.3.0）。`emela pome add github.com/ieyoukan/mamela-aws/pome@v0.1.0` で使います。
 
 公開リポジトリです。アカウント ID、ARN、profile の名前、アドレスは書きません。それらは git が無視する `mamela.providers.toml` にだけ書きます。
