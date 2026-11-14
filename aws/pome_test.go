@@ -30,4 +30,10 @@ func TestPomeProgramIsTheBuild(t *testing.T) {
 	if !strings.Contains(string(toml), `sha256 = "`+hex.EncodeToString(sum[:])+`"`) {
 		t.Error("pome/mamela-provider.toml does not name the program: run ./build.sh")
 	}
+	// The typed declarations (src/kinds.emel) are what the manifest generates.
+	check := exec.Command("go", "tool", "mamela", "provider", "pome", "--check", "--out", "src/kinds.emel", "../pome")
+	check.Env = append(os.Environ(), "GOWORK=off")
+	if b, err := check.CombinedOutput(); err != nil {
+		t.Errorf("%v\n%s", err, b)
+	}
 }

@@ -301,10 +301,10 @@ pub fn instance(graph: Mamela.Graph, b: Boundary, i: Instance) -> Mamela.Graph {
 
 fn env_json(e: Env) -> Dynamic {
   e match {
-    Plain(name, value) -> Dynamic.object([("name", Text(name)), ("value", Text(value))])
+    Plain(name, value) -> Dynamic.object([("variable", Text(name)), ("value", Text(value))])
     PrivateIp(name, instance, prefix) -> {
       Dynamic.object(
-        [("name", Text(name)), ("instanceIp", Text(instance.name)), ("prefix", Text(prefix))],
+        [("variable", Text(name)), ("instanceIp", Text(instance.name)), ("prefix", Text(prefix))],
       )
     }
   }
@@ -326,7 +326,7 @@ fn port_json(p: Port) -> Dynamic {
 }
 
 fn container_json(c: Container) -> Dynamic {
-  fields = [("name", Text(c.name)), ("image", Text(c.image))]
+  fields = [("containerName", Text(c.name)), ("image", Text(c.image))]
   command = if List.is_empty(c.command) { [] } else { [("command", Items(c.command.map(Text)))] }
   env = if List.is_empty(c.environment) {
     []

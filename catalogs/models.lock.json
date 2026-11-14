@@ -1,0 +1,35 @@
+{
+  "schema": "mamela-aws-models/v1",
+  "models": {
+    "ec2": {
+      "repo": "github.com/aws/api-models-aws",
+      "commit": "3cd98287b471c106254abd89279cc87308d38bfd",
+      "path": "models/ec2/service/2016-11-15/ec2-2016-11-15.json",
+      "sha256": "baab98be2fffd19d67338307a0d7bdb64e8fff8c040cb495ec77725b13940c2e"
+    },
+    "ecs": {
+      "repo": "github.com/aws/api-models-aws",
+      "commit": "3cd98287b471c106254abd89279cc87308d38bfd",
+      "path": "models/ecs/service/2014-11-13/ecs-2014-11-13.json",
+      "sha256": "4d440c61f68a7950297a9ae41c40dc865359b69944eca9bd6413a48900b79334"
+    },
+    "iam": {
+      "repo": "github.com/aws/api-models-aws",
+      "commit": "3cd98287b471c106254abd89279cc87308d38bfd",
+      "path": "models/iam/service/2010-05-08/iam-2010-05-08.json",
+      "sha256": "c1f74d3eda269e4fa2f00b57d57ed19c0e0a6d7fc7c70d4e351e319d178430f9"
+    },
+    "logs": {
+      "repo": "github.com/aws/api-models-aws",
+      "commit": "3cd98287b471c106254abd89279cc87308d38bfd",
+      "path": "models/cloudwatch-logs/service/2014-03-28/cloudwatch-logs-2014-03-28.json",
+      "sha256": "02e71956b2b21d0ca4945c613d4dec5b48cc3b27a19ff9d76cce7513f2081ca3"
+    },
+    "ssm": {
+      "repo": "github.com/aws/api-models-aws",
+      "commit": "3cd98287b471c106254abd89279cc87308d38bfd",
+      "path": "models/ssm/service/2014-11-06/ssm-2014-11-06.json",
+      "sha256": "93aa900468d4b0c32e15f1530ad20561188673dd1fecf493e61c4790dd5b6754"
+    }
+  }
+}

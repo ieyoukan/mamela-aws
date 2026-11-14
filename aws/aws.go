@@ -7,8 +7,13 @@
 //
 // Everything it makes carries the tags mamela:name (the resource's name) and mamela:boundary
 // (the declaration's boundary), and AWS names that start with the boundary. It changes only what
-// it made (Mamela vouches for that with its own records), never deletes as a plan's change, and
-// its guard holds every apply to the operator's boundary and budget.
+// it made or a person adopted (Mamela vouches for that with its own records), never deletes,
+// reboots or stops as a plan's change (delete, resize, reboot and shorten-retention are explicit
+// operations), and its guard holds every apply to the operator's boundary and budget.
+//
+// What Terraform made moves to Mamela (ADR 0009 of Mamela): every kind imports its Terraform
+// types, and adopt adds Mamela's marks to an imported object (tags, a role's description), and
+// nothing else. What Mamela cannot adopt safely is not imported, and the import says why.
 package aws
 
 import (
@@ -19,9 +24,9 @@ import (
 	"errors"
 	"fmt"
 	"maps"
-	"slices"
 	"strings"
 
+	"github.com/ieyoukan/mamela/provider/kit"
 	"github.com/ieyoukan/mamela/provider/protocol"
 	"github.com/ieyoukan/mamela/provider/sdk"
 )
@@ -50,15 +55,26 @@ const (
 	TagBoundary = "mamela:boundary"
 )
 
-// OpDelete is every kind's explicit delete (ADR 0006 of Mamela): never planned.
-const OpDelete protocol.Op = "delete"
+// Explicit operations (ADR 0006 of Mamela): never planned; a person carries one out with
+// `mamela act --confirm <name> <op> <resource> <pome-dir>`.
+const (
+	// OpDelete is every kind's delete.
+	OpDelete protocol.Op = "delete"
+	// OpAdopt adopts an imported object (mamela import terraform, ADR 0009 of Mamela): it adds
+	// Mamela's marks to it (tags; a role's description), and nothing else.
+	OpAdopt protocol.Op = "adopt"
+)
 
-// object is one AWS object this provider made, as observed.
+// object is one AWS object this provider made (or someone else made, Foreign), as observed.
 type object struct {
 	Name, Boundary string
 	IDs            map[string]string
 	Version        string
 	State          any
+	// Foreign: an object where Mamela keeps its own (a log group under /mamela/<boundary>/) that
+	// carries none of Mamela's marks. A declaration of its name is refused; a person may adopt it
+	// once it is imported.
+	Foreign bool
 }
 
 // kind is one resource kind.
@@ -79,6 +95,26 @@ type kind interface {
 	// done says whether an approved request is in effect already (for apply to skip it, and for
 	// lookup).
 	done(c *client, ch protocol.Change, a protocol.Approved) (bool, error)
+
+	// spec is the Go type of its spec (the manifest's, from which its Pome is generated); doc
+	// says what a resource of it is.
+	spec() any
+	doc() string
+	// imports are the Terraform types it imports; importObject declares one of them in the
+	// boundary, or says why it does not (kit.Skip).
+	imports() []string
+	importObject(o protocol.ImportObject, r kit.Resolver, boundary string) (kit.Imported, error)
+	// find finds an object by the IDs it was imported with, while it carries none of Mamela's
+	// marks (nil when there is none, or it is Mamela's already).
+	find(c *client, ids map[string]string) (*object, error)
+	// adopt is the change that adds Mamela's marks to an imported object (tags; a role's
+	// description), and nothing else.
+	adopt(o protocol.Observed, desired protocol.Resource) (protocol.Change, error)
+}
+
+// explicitKind is a kind with explicit operations besides delete and adopt (an instance's resize).
+type explicitKind interface {
+	prepare(op protocol.Op, o protocol.Observed, desired *protocol.Resource) (protocol.Change, error)
 }
 
 var kinds = []kind{vpcKind{}, gatewayKind{}, subnetKind{}, routeTableKind{}, groupKind{}, logGroupKind{}, roleKind{},
@@ -93,30 +129,6 @@ func kindOf(k protocol.ResourceKind) (kind, bool) {
 	return nil, false
 }
 
-// Provider implements sdk.Provider (and sdk.Guarder, sdk.Preparer).
-type Provider struct{}
-
-// Manifest implements sdk.Provider.
-func (Provider) Manifest() protocol.Manifest {
-	m := protocol.Manifest{Schema: protocol.Schema, Provider: Name, Version: Version,
-		APIs: []string{APIEC2, APIECS, APILogs, APIIAM, APISSM}, Guard: &protocol.Guard{Calls: allReads()}}
-	m.ObserveCalls = allReads()
-	m.Observe = needs("ec2:Describe*", "ecs:Describe*", "ecs:List*", "logs:DescribeLogGroups", "iam:GetRole", "iam:ListAttachedRolePolicies",
-		"iam:GetInstanceProfile", "ssm:GetParameter")
-	for _, k := range kinds {
-		var ops []protocol.Operation
-		for _, o := range k.operations() {
-			if o.Support == protocol.Supported {
-				// An operation reads what it changes, to skip what is in effect and to look it up.
-				o.Calls = append(slices.Clone(k.reads()), o.Calls...)
-			}
-			ops = append(ops, o)
-		}
-		m.Kinds = append(m.Kinds, protocol.Kind{Kind: k.kind(), Operations: ops})
-	}
-	return m
-}
-
 // needs are the IAM actions an operation needs of the profile's role (shown by mamela check).
 func needs(actions ...string) []protocol.Need {
 	var out []protocol.Need
@@ -126,172 +138,12 @@ func needs(actions ...string) []protocol.Need {
 	return out
 }
 
-// Observe implements sdk.Provider.
-func (Provider) Observe(ctx context.Context, h *sdk.Host, in protocol.ObserveParams) (protocol.ObserveResult, error) {
-	c := &client{ctx: ctx, h: h}
-	var out protocol.ObserveResult
-	declared := map[string]bool{}
-	byKind := map[protocol.ResourceKind][]object{}
-	for _, k := range kinds {
-		objs, err := k.list(c)
-		if err != nil {
-			return out, fmt.Errorf("%s: %w", k.kind(), err)
-		}
-		byKind[k.kind()] = objs
-	}
-	for _, r := range in.Resources {
-		declared[r.ID] = true
-		k, ok := kindOf(r.Kind)
-		if !ok {
-			return out, fmt.Errorf("%s: kind %s is not this provider's", r.ID, r.Kind)
-		}
-		var s base
-		if err := json.Unmarshal(r.Spec, &s); err != nil || s.Boundary == "" {
-			return out, fmt.Errorf("%s: the spec has no boundary", r.ID)
-		}
-		o := protocol.Observed{ID: r.ID, Kind: r.Kind, Name: r.Name}
-		i := slices.IndexFunc(byKind[r.Kind], func(x object) bool { return x.Name == r.Name && x.Boundary == s.Boundary })
-		if i >= 0 {
-			fill(&o, byKind[r.Kind][i])
-		} else {
-			st, err := k.missing(c, r)
-			if err != nil {
-				return out, fmt.Errorf("%s: %w", r.ID, err)
-			}
-			if st != nil {
-				o.State, _ = json.Marshal(st, json.Deterministic(true))
-			}
-		}
-		out.Resources = append(out.Resources, o)
-	}
-	// What it made that is no longer declared: reported, so that Mamela keeps it.
-	for _, k := range kinds {
-		for _, x := range byKind[k.kind()] {
-			id := string(k.kind()) + " " + x.Name
-			if declared[id] {
-				continue
-			}
-			declared[id] = true
-			o := protocol.Observed{ID: id, Kind: k.kind(), Name: x.Name}
-			fill(&o, x)
-			out.Resources = append(out.Resources, o)
-		}
-	}
-	return out, nil
-}
-
-func fill(o *protocol.Observed, x object) {
-	o.Exists, o.Owned, o.Version = true, true, x.Version
-	o.IDs = map[string]string{"mamela-name": x.Name}
-	maps.Copy(o.IDs, x.IDs)
-	if x.State != nil {
-		o.State, _ = json.Marshal(x.State, json.Deterministic(true))
-	}
-}
-
-// Diff implements sdk.Provider.
-func (Provider) Diff(_ context.Context, in protocol.DiffParams) (protocol.DiffResult, error) {
-	obs := map[string]protocol.Observed{}
-	for _, o := range in.Observed {
-		obs[o.ID] = o
-	}
-	desired := slices.Clone(in.Desired)
-	slices.SortFunc(desired, func(a, b protocol.Resource) int { return strings.Compare(a.ID, b.ID) })
-	var out protocol.DiffResult
-	for _, r := range desired {
-		k, ok := kindOf(r.Kind)
-		if !ok {
-			return out, fmt.Errorf("%s: kind %s is not this provider's", r.ID, r.Kind)
-		}
-		o := obs[r.ID]
-		if o.Exists && !o.Owned {
-			continue // not Mamela's: nothing is planned for it
-		}
-		cs, err := k.diff(r, o, in.Dependencies)
-		if err != nil {
-			return out, fmt.Errorf("%s: %w", r.ID, err)
-		}
-		out.Changes = append(out.Changes, cs...)
-	}
-	return out, nil
-}
-
-// Prepare implements sdk.Preparer: the explicit delete, and a service's run-task.
-func (Provider) Prepare(_ context.Context, in protocol.PrepareParams) (protocol.PrepareResult, error) {
-	k, ok := kindOf(in.Observed.Kind)
-	if !ok || !in.Observed.Exists {
-		return protocol.PrepareResult{}, fmt.Errorf("%s: nothing to %s", in.Observed.ID, in.Op)
-	}
-	switch in.Op {
-	case OpDelete:
-		ch, err := k.remove(in.Observed)
-		return protocol.PrepareResult{Change: ch}, err
-	case OpRunTask:
-		ch, err := runTaskChange(in.Observed)
-		return protocol.PrepareResult{Change: ch}, err
-	}
-	return protocol.PrepareResult{}, fmt.Errorf("%s is not an explicit operation of %s", in.Op, in.Observed.Kind)
-}
-
-// Apply implements sdk.Provider: it sends the approved requests in order, each at most once, and
-// skips those in effect already (an earlier apply that was interrupted).
-func (Provider) Apply(ctx context.Context, h *sdk.Host, in protocol.ApplyParams) (protocol.ApplyResult, error) {
-	c := &client{ctx: ctx, h: h}
-	k, ok := kindOf(in.Change.Kind)
-	if !ok {
-		return protocol.ApplyResult{}, fmt.Errorf("kind %s is not this provider's", in.Change.Kind)
-	}
-	var sent []string
-	for _, a := range in.Change.Requests {
-		skip, err := k.done(c, in.Change, a)
-		if err != nil {
-			return protocol.ApplyResult{}, err
-		}
-		if skip {
-			continue
-		}
-		if _, err := c.send(a); err != nil {
-			var ae *awsError
-			if errors.As(err, &ae) && alreadyDone(ae.Code) {
-				continue
-			}
-			return protocol.ApplyResult{}, err
-		}
-		sent = append(sent, action(a))
-	}
-	return protocol.ApplyResult{Message: fmt.Sprintf("%s %s: %s", in.Change.Op, in.Change.Resource, strings.Join(sent, ", "))}, nil
-}
-
-// alreadyDone: AWS's answers to a create of something that exists (a retry after a lost answer).
+// alreadyDone: AWS's answers that say a request's effect is there already (a retry after a lost
+// answer, which its done did not see). Only an answer that says this very effect is there counts:
+// "already exists" of a create does not (the object may be someone else's), nor "already
+// associated" (maybe with something else); they are errors, and the next plan looks again.
 func alreadyDone(code string) bool {
-	return slices.Contains([]string{"InvalidGroup.Duplicate", "InvalidPermission.Duplicate", "RouteAlreadyExists", "Resource.AlreadyAssociated",
-		"EntityAlreadyExists", "ResourceAlreadyExistsException", "LimitExceeded.AlreadyAdded"}, code)
-}
-
-// Lookup implements sdk.Provider: how many of the approved requests are in effect.
-func (Provider) Lookup(ctx context.Context, h *sdk.Host, in protocol.LookupParams) (protocol.LookupResult, error) {
-	c := &client{ctx: ctx, h: h}
-	k, ok := kindOf(in.Change.Kind)
-	if !ok {
-		return protocol.LookupResult{}, fmt.Errorf("kind %s is not this provider's", in.Change.Kind)
-	}
-	n := 0
-	for _, a := range in.Change.Requests {
-		ok, err := k.done(c, in.Change, a)
-		if err != nil {
-			return protocol.LookupResult{}, err
-		}
-		if ok {
-			n++
-		}
-	}
-	switch {
-	case n == len(in.Change.Requests):
-		return protocol.LookupResult{Status: protocol.LookupDone}, nil
-	case n == 0:
-		return protocol.LookupResult{Status: protocol.LookupNotDone}, nil
-	}
-	return protocol.LookupResult{Status: protocol.LookupPartly}, nil
+	return code == "InvalidPermission.Duplicate" // the very rule exists
 }
 
 // base is what every spec has.

@@ -104,6 +104,38 @@
         "limit",
         "nextToken"
       ]
+    },
+    {
+      "method": "POST",
+      "path": "/",
+      "effect": "read",
+      "fixed": {
+        "X-Amz-Target": "Logs_20140328.ListTagsForResource"
+      },
+      "header": [
+        "X-Amz-Target"
+      ],
+      "json": [
+        "resourceArn"
+      ]
+    },
+    {
+      "method": "POST",
+      "path": "/",
+      "effect": "change",
+      "fixed": {
+        "X-Amz-Target": "Logs_20140328.TagResource"
+      },
+      "header": [
+        "X-Amz-Target"
+      ],
+      "json": [
+        "resourceArn",
+        "tags"
+      ],
+      "bind": [
+        "resourceArn"
+      ]
     }
   ]
 }

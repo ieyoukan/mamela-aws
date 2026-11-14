@@ -21,3 +21,10 @@ version = "v0.3.1"
 commit = "cc5ea4eba1f8cd0f9a58cd38404a8eec8ad22d49"
 hash = "h1:0bzw/1B73xWZ2/b7QtEIEq9W23Djwx6rOunUnRpIIwA="
 manifest = "h1:DNiPwwNFjTdMcEaHiJI4TGlTjeixmO8hEUTIfse3I94="
+
+[[pome]]
+path = "github.com/ieyoukan/mamela/pome/mamela"
+version = "v0.3.0"
+commit = "30cbc98002d65bdeead7fc1ebe5102fc01a87f7b"
+hash = "h1:zh3AVBk7uk1kfPd2d3cPerJDvzi5JJIn8e1PTsfkQKg="
+manifest = "h1:2e/aLWL7VHOpyw4B1WIq/sgh8ALIqjcvPKB4j+XyOos="
